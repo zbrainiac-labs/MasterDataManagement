@@ -70,6 +70,15 @@ jobs:
         run: |
           bash github-workflow-verification_v1.sh
 
+      - name: DCM Analyze + Plan + Deploy
+        run: |
+          bash /usr/local/bin/snowflake-deploy-dcm_v1.sh \
+            --PROJECT_IDENTIFIER=$DCM_PROJECT_IDENTIFIER \
+            --CONNECTION_NAME=$CONNECTION_NAME \
+            --TARGET=$DCM_TARGET \
+            --ALIAS="release-${RELEASE_NUM}-${GITHUB_RUN_ATTEMPT}" \
+            --PROJECT_DIR="$(pwd)"
+
       - name: Extract dependencies
         run: |
           bash /usr/local/bin/snowflake-extract-dependencies_v1.sh \
@@ -86,15 +95,6 @@ jobs:
         uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
         with:
           scanMetadataReportFile: '.scannerwork/report-task.txt'
-
-      - name: DCM Analyze + Plan + Deploy
-        run: |
-          bash /usr/local/bin/snowflake-deploy-dcm_v1.sh \
-            --PROJECT_IDENTIFIER=$DCM_PROJECT_IDENTIFIER \
-            --CONNECTION_NAME=$CONNECTION_NAME \
-            --TARGET=$DCM_TARGET \
-            --ALIAS="release-${RELEASE_NUM}-${GITHUB_RUN_ATTEMPT}" \
-            --PROJECT_DIR="$(pwd)"
 
       - name: Clone schema for regression tests
         run: |
