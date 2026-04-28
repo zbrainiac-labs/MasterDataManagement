@@ -1,12 +1,4 @@
 # Snowflake-Native Master Data Management
-
-| Field        | Value                        |
-|--------------|------------------------------|
-| Version      | 1.6                          |
-| Last Updated | 2026-04-24                   |
-| Status       | Review Ready                 |
-| Owner        | marcel.daeppen@snowflake.com |
-
 ## Why
 
 Organizations running multiple systems that keep similar types of data -- such as CRM, ERP, or billing -- face a common problem: the same entity (customer, product, account) exists as separate, conflicting records across systems. There is no single source of truth, data quality is unknown, and historical changes are invisible. Commercial MDM platforms solve this but at significant complexity and cost.
