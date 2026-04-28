@@ -10,7 +10,7 @@ WITH crm_a AS (
         INITCAP(first_name) AS first_name, INITCAP(last_name) AS last_name,
         LOWER(TRIM(email)) AS email, REGEXP_REPLACE(phone, '[^0-9+]', '') AS phone,
         TRY_TO_DATE(SPLIT_PART(_SOURCE_FILE, '_crm_', 1), 'YYYY-MM-DD') AS file_date,
-        CURRENT_TIMESTAMP()::TIMESTAMP_LTZ AS row_timestamp
+        CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS row_timestamp
     FROM {{db}}.{{raw_schema}}.CRMI_RAW_TB_CUSTOMER_A
 ),
 crm_b AS (
@@ -19,7 +19,7 @@ crm_b AS (
         INITCAP(CASE WHEN ARRAY_SIZE(SPLIT(name, ' ')) > 1 THEN TRIM(SUBSTR(name, POSITION(' ' IN name) + 1)) ELSE NULL END) AS last_name,
         LOWER(TRIM(email_address)) AS email, REGEXP_REPLACE(mobile, '[^0-9+]', '') AS phone,
         TRY_TO_DATE(SPLIT_PART(_SOURCE_FILE, '_crm_', 1), 'YYYY-MM-DD') AS file_date,
-        CURRENT_TIMESTAMP()::TIMESTAMP_LTZ AS row_timestamp
+        CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS row_timestamp
     FROM {{db}}.{{raw_schema}}.CRMI_RAW_TB_CUSTOMER_B
 ),
 crm_c AS (
@@ -28,7 +28,7 @@ crm_c AS (
         INITCAP(CASE WHEN ARRAY_SIZE(SPLIT(caller_name, ' ')) > 1 THEN TRIM(SUBSTR(caller_name, POSITION(' ' IN caller_name) + 1)) ELSE NULL END) AS last_name,
         LOWER(TRIM(callback_email)) AS email, REGEXP_REPLACE(callback_phone, '[^0-9+]', '') AS phone,
         TRY_TO_DATE(SPLIT_PART(_SOURCE_FILE, '_crm_', 1), 'YYYY-MM-DD') AS file_date,
-        CURRENT_TIMESTAMP()::TIMESTAMP_LTZ AS row_timestamp
+        CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS row_timestamp
     FROM {{db}}.{{raw_schema}}.CRMI_RAW_TB_CUSTOMER_C
 )
 SELECT * FROM crm_a UNION ALL SELECT * FROM crm_b UNION ALL SELECT * FROM crm_c;
@@ -41,7 +41,7 @@ WITH crm_a AS (
         INITCAP(TRIM(street)) AS street, INITCAP(TRIM(city)) AS city,
         UPPER(TRIM(postal_code)) AS postal_code, UPPER(TRIM(country)) AS country,
         TRY_TO_DATE(SPLIT_PART(_SOURCE_FILE, '_crm_', 1), 'YYYY-MM-DD') AS file_date,
-        CURRENT_TIMESTAMP()::TIMESTAMP_LTZ AS row_timestamp
+        CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS row_timestamp
     FROM {{db}}.{{raw_schema}}.CRMI_RAW_TB_ADDRESSES_A
 ),
 crm_b AS (
@@ -49,7 +49,7 @@ crm_b AS (
         INITCAP(TRIM(address_line)) AS street, INITCAP(TRIM(city)) AS city,
         UPPER(TRIM(zip)) AS postal_code, UPPER(TRIM(country_code)) AS country,
         TRY_TO_DATE(SPLIT_PART(_SOURCE_FILE, '_crm_', 1), 'YYYY-MM-DD') AS file_date,
-        CURRENT_TIMESTAMP()::TIMESTAMP_LTZ AS row_timestamp
+        CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS row_timestamp
     FROM {{db}}.{{raw_schema}}.CRMI_RAW_TB_ADDRESSES_B
 ),
 crm_c AS (
@@ -57,7 +57,7 @@ crm_c AS (
         INITCAP(TRIM(location)) AS street, INITCAP(TRIM(town)) AS city,
         UPPER(TRIM(postcode)) AS postal_code, UPPER(TRIM(country)) AS country,
         TRY_TO_DATE(SPLIT_PART(_SOURCE_FILE, '_crm_', 1), 'YYYY-MM-DD') AS file_date,
-        CURRENT_TIMESTAMP()::TIMESTAMP_LTZ AS row_timestamp
+        CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS row_timestamp
     FROM {{db}}.{{raw_schema}}.CRMI_RAW_TB_ADDRESSES_C
 )
 SELECT * FROM crm_a UNION ALL SELECT * FROM crm_b UNION ALL SELECT * FROM crm_c;
