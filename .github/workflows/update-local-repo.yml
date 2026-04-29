@@ -1,137 +1,16 @@
-# ======================================================
-#               GITHUB WORKFLOW
-# ======================================================
-#
-# This workflow (`update-local-repo.yml`) is protected
-# by a SHA256 integrity check script.
-#
-# Any changes -- even whitespace or comments -- will
-# cause the build to FAIL.
-#
-# If edits are required, notify the maintainer and
-# update the hash in: github-workflow-verification_v1.sh
-#
-# shasum -a 256 .github/workflows/update-local-repo.yml
-#
-# ======================================================
-
 name: Update Local Repository and Run Sonar Scanner
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  update-and-scan:
-    runs-on: self-hosted
-    env:
-      PROJECT_KEY: ${{ github.event.repository.name }}
-      RELEASE_NUM: ${{ github.run_number }}
-      SONAR_BRANCH_NAME: ${{ github.ref_name }}
-      SONAR_HOST: http://sonarqube:9000
+  pipeline:
+    uses: zBrainiac/DataOpsBackbone/.github/workflows/dataops-pipeline.yml@main
+    with:
       SOURCE_DATABASE: MASTER_DATA_MANAGEMENT
       SOURCE_SCHEMA: CRM_AGG_001
       DCM_PROJECT_IDENTIFIER: MASTER_DATA_MANAGEMENT.CRM_AGG_001.MDM_PROJECT
       DCM_TARGET: DEV
-      SNOW_CONFIG_B64: ${{ secrets.SNOW_CONFIG_B64 }}
-
-    steps:
-      - name: Set up dynamic base directories
-        run: |
-          echo "BASE_DIR_PROJECT=$HOME/workspace/${PROJECT_KEY}" >> $GITHUB_ENV
-
-      - name: Show repo info
-        run: |
-          echo "Project: $PROJECT_KEY"
-          echo "Branch: $SONAR_BRANCH_NAME"
-          echo "Release #: $RELEASE_NUM"
-          echo "DCM Project: $DCM_PROJECT_IDENTIFIER"
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Pull latest changes
-        run: git pull
-
-      - name: Set up github runner env
-        run: |
-          bash /usr/local/bin/github-runner_v1.sh
-          CONNECTION_NAME=$(grep -oP '^\[connections\.\K[^\]]+' $HOME/.snowflake/config.toml | head -1)
-          echo "CONNECTION_NAME=$CONNECTION_NAME" >> $GITHUB_ENV
-          if [[ -f "$HOME/.sonar_env" ]]; then
-            cat "$HOME/.sonar_env" >> $GITHUB_ENV
-          fi
-
-      - name: GitHub Actions workflow validates
-        run: |
-          bash github-workflow-verification_v1.sh
-
-      - name: DCM Analyze + Plan + Deploy
-        run: |
-          bash /usr/local/bin/snowflake-deploy-dcm_v1.sh \
-            --PROJECT_IDENTIFIER=$DCM_PROJECT_IDENTIFIER \
-            --CONNECTION_NAME=$CONNECTION_NAME \
-            --TARGET=$DCM_TARGET \
-            --ALIAS="release-${RELEASE_NUM}-${GITHUB_RUN_ATTEMPT}" \
-            --PROJECT_DIR="$(pwd)"
-
-      - name: Extract dependencies
-        run: |
-          bash /usr/local/bin/snowflake-extract-dependencies_v1.sh \
-            --SOURCE_DATABASE=$SOURCE_DATABASE \
-            --SOURCE_SCHEMA=$SOURCE_SCHEMA \
-            --CONNECTION_NAME=$CONNECTION_NAME
-
-      - name: Run Sonar Scanner
-        run: |
-          bash /usr/local/bin/sonar-scanner_v2.sh
-
-      - name: Wait for Quality Gate to complete
-        continue-on-error: true
-        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
-        with:
-          scanMetadataReportFile: '.scannerwork/report-task.txt'
-
-      - name: Clone schema for regression tests
-        run: |
-          bash /usr/local/bin/snowflake-clone-db_v2.sh \
-            --SOURCE_DATABASE=$SOURCE_DATABASE \
-            --SOURCE_SCHEMA=$SOURCE_SCHEMA \
-            --CLONE_DATABASE=$SOURCE_DATABASE \
-            --CLONE_SCHEMA=$SOURCE_SCHEMA \
-            --RELEASE_NUM=$RELEASE_NUM \
-            --CONNECTION_NAME=$CONNECTION_NAME
-
-      - name: Run SQL Validation Tests
-        run: |
-          bash /usr/local/bin/sql_validation_v4.sh \
-            --CLONE_DATABASE=$SOURCE_DATABASE \
-            --CLONE_SCHEMA=$SOURCE_SCHEMA \
-            --RELEASE_NUM=$RELEASE_NUM \
-            --CONNECTION_NAME=$CONNECTION_NAME \
-            --TEST_FILE="$(pwd)/sqlunit/tests.sqltest"
-
-      - name: Drop cloned schema
-        if: always()
-        run: |
-          bash /usr/local/bin/snowflake-drop-clone-db_v2.sh \
-            --CLONE_DATABASE=$SOURCE_DATABASE \
-            --CLONE_SCHEMA=$SOURCE_SCHEMA \
-            --RELEASE_NUM=$RELEASE_NUM \
-            --CONNECTION_NAME=$CONNECTION_NAME
-
-      - name: Zip source files
-        run: |
-          zip -r release.zip . -x '*.git*' '*.scannerwork*' 'out/*'
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Release ${{ github.run_number }}
-          tag_name: v${{ github.run_number }}
-          files: release.zip
-          token: ${{ secrets.GITHUB_TOKEN }}
+    secrets: inherit
