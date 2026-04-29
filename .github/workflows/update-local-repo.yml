@@ -7,7 +7,7 @@ on:
 
 jobs:
   pipeline:
-    uses: zBrainiac/DataOpsBackbone/.github/workflows/dataops-pipeline.yml@main
+    uses: zbrainiac-labs/DataOpsBackbone/.github/workflows/dataops-pipeline.yml@main
     with:
       SOURCE_DATABASE: MASTER_DATA_MANAGEMENT
       SOURCE_SCHEMA: CRM_AGG_001
