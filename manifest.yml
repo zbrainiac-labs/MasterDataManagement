@@ -5,16 +5,16 @@ default_target: 'DEV'
 targets:
   DEV:
     account_identifier: SFSEEUROPE-ZS28104
-    project_name: 'MDM_DEV.MDM_AGG_001.MDM_PROJECT'
+    project_name: 'MDM_DEV.MDM_DCM.MDM_PROJECT'
     project_owner: CICD
     templating_config: 'DEV'
 
 templating:
   defaults:
     db: 'MDM_DEV'
-    raw_schema: 'MDM_RAW_001'
-    agg_schema: 'MDM_AGG_001'
-    srv_schema: 'MDM_SRV_001'
+    raw_schema: 'MDM_RAW_v001'
+    agg_schema: 'MDM_AGG_v001'
+    srv_schema: 'MDM_SRV_v001'
     warehouse: 'MD_TEST_WH'
     dt_lag: '1 hour'
   configurations:
