@@ -9,8 +9,8 @@ jobs:
   pipeline:
     uses: zbrainiac-labs/DataOpsBackbone/.github/workflows/dataops-pipeline.yml@main
     with:
-      SOURCE_DATABASE: MASTER_DATA_MANAGEMENT
-      SOURCE_SCHEMA: CRM_AGG_001
-      DCM_PROJECT_IDENTIFIER: MASTER_DATA_MANAGEMENT.CRM_AGG_001.MDM_PROJECT
+      SOURCE_DATABASE: MDM_DEV
+      SOURCE_SCHEMA: MDM_AGG_001
+      DCM_PROJECT_IDENTIFIER: MDM_DEV.MDM_AGG_001.MDM_PROJECT
       DCM_TARGET: DEV
     secrets: inherit

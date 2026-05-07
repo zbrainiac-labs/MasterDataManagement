@@ -5,4 +5,5 @@ output/
 __pycache__/
 *.pyc
 app/.streamlit/secrets.toml
+.streamlit/secrets.toml
 .snowflake/

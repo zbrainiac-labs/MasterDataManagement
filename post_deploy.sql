@@ -5,8 +5,8 @@
 -- Execution: snow sql -f post_deploy.sql -c <connection>
 -- =============================================================================
 
-USE DATABASE MASTER_DATA_MANAGEMENT;
-USE SCHEMA CRM_RAW_001;
+USE DATABASE MDM_DEV;
+USE SCHEMA MDM_RAW_001;
 
 -- File Formats
 CREATE OR REPLACE FILE FORMAT CRMI_RAW_FF_CUSTOMER_A TYPE='CSV' FIELD_DELIMITER=',' SKIP_HEADER=1 FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF=('','NULL','null') EMPTY_FIELD_AS_NULL=TRUE ENCODING='UTF8';

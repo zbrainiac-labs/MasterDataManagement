@@ -7,8 +7,8 @@
 -- triggering Cortex AI calls through VW_CUSTOMER_ENRICHED.
 -- =============================================================================
 
-USE DATABASE MASTER_DATA_MANAGEMENT;
-USE SCHEMA CRM_AGG_001;
+USE DATABASE MDM_DEV;
+USE SCHEMA MDM_AGG_001;
 USE WAREHOUSE MD_TEST_WH;
 
 -- =============================================================================
@@ -166,4 +166,4 @@ SELECT
     'Serving view count matches golden' AS check_name,
     CASE WHEN c.cnt = s.cnt THEN 'PASS' ELSE 'FAIL: DT=' || c.cnt || ' SRV=' || s.cnt END AS result
 FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER) c,
-     (SELECT COUNT(*) AS cnt FROM CRM_SRV_001.CRMS_AGG_VW_CUSTOMER_360) s;
+     (SELECT COUNT(*) AS cnt FROM MDM_SRV_001.CRMS_AGG_VW_CUSTOMER_360) s;

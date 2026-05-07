@@ -7,7 +7,7 @@ This project proves that **Snowflake alone** delivers core MDM capabilities -- e
 
 ## What
 
-The Showcase is a  fully functional MDM pipeline that merges **1,500 customer records and their addresses from 3 CRM systems** into **1,115 golden customer records with 1:1 linked golden addresses**, achieving a 24.4% merge rate, weighted DQ scoring, and full SCD2 change history for both entities.
+The Showcase is a  fully functional MDM pipeline that merges **1,800 customer records and their addresses from 3 CRM systems** into **1,115 golden customer records with 1:1 linked golden addresses**, achieving a 38% merge rate, weighted DQ scoring, and full SCD2 change history for both entities.
 
 ### Glossary
 
@@ -23,21 +23,20 @@ The Showcase is a  fully functional MDM pipeline that merges **1,500 customer re
 
 | Source | Description       | Trust | Records | Entities          |
 |--------|-------------------|-------|---------|-------------------|
-| CRM_A  | Legacy system     | 1     | 600     | Customer, Address |
-| CRM_B  | Acquired company  | 2     | 400     | Customer, Address |
+| CRM_A  | Legacy system     | 1     | 780     | Customer, Address |
+| CRM_B  | Acquired company  | 2     | 520     | Customer, Address |
 | CRM_C  | Call center       | 3     | 500     | Customer, Address |
 
 ### Key Metrics (E2E Tested)
 
 | Metric                | Value                    |
 |-----------------------|--------------------------|
-| Source records        | 1,500 (600 + 400 + 500) |
+| Source records        | 1,800 (780 + 520 + 500) |
 | Golden records        | 1,115                    |
-| Merged (2+ sources)   | 272 customers            |
-| Three-source merges   | 40 customers             |
-| Merge rate            | 24.4%                    |
-| Avg DQ score          | 95.0                     |
-| DQ Excellent (90-100) | 973 records              |
+| Merged (2+ sources)   | ~300 customers           |
+| Merge rate            | 38%                      |
+| Avg DQ score          | ~95                      |
+| DQ Excellent (90-100) | ~970 records             |
 
 ### Scope
 
@@ -99,14 +98,14 @@ The Showcase is a  fully functional MDM pipeline that merges **1,500 customer re
       |                      |                      |
       v                      v                      v
 +------------------------------------------------------------------------+
-|  RAW (CRM_RAW_001)                                                     |
+|  RAW (MDM_RAW_001)                                                     |
 |  Stages -> Directory Table Streams -> Serverless Tasks -> COPY INTO    |
 |  6 append-only tables (3 customer + 3 address), ROW_TIMESTAMP=TRUE     |
 +------------------------------------------------------------------------+
       |
       v
 +------------------------------------------------------------------------+
-|  INTEGRATION (CRM_AGG_001)                                             |
+|  INTEGRATION (MDM_AGG_001)                                             |
 |                                                                        |
 |  View Pipeline:                                                        |
 |    VW_CUSTOMER_UNION       Harmonize 3 sources into common schema      |
@@ -130,7 +129,7 @@ The Showcase is a  fully functional MDM pipeline that merges **1,500 customer re
       |
       v
 +------------------------------------------------------------------------+
-|  SERVING (CRM_SRV_001)                                                 |
+|  SERVING (MDM_SRV_001)                                                 |
 |  VW_CUSTOMER_360       Nested JSON (APIs, modern apps)                 |
 |  VW_CUSTOMER_360_FLAT  Flat rows (Tableau, Power BI)                   |
 +------------------------------------------------------------------------+
@@ -198,7 +197,7 @@ Step 1 — Union & Enrich     All 1,500 source records are unified into a common
 Step 2 — Group              Entity resolution (blocking → deterministic → probabilistic)
                              assigns every record a GROUP_ID. Records sharing a GROUP_ID
                              represent the same real-world entity (DT_CUSTOMER_GROUPS).
-                             Result: 1,115 groups from 1,500 records (24.4% merge rate).
+                             Result: 1,115 groups from 1,800 records (38% merge rate).
 
 Step 3 — Survive            Within each GROUP_ID, survivorship selects the best value for
                              every attribute using FIRST_VALUE() ordered by completeness →
@@ -280,12 +279,12 @@ No stored procedures, no tasks, no imperative DML — just Dynamic Tables with `
 | # | Schema | Object | Type | Definition File |
 |---|--------|--------|------|-----------------|
 | 1-5 | -- | Database, Warehouse, 3 Schemas | Infra | `pre_deploy.sql` + `infrastructure.sql` |
-| 6-11 | `CRM_RAW_001` | 6 Internal Stages (ST_CUSTOMER_A/B/C, ST_ADDRESSES_A/B/C) | Stage | `infrastructure.sql` |
-| 12-17 | `CRM_RAW_001` | 6 RAW Tables (TB_CUSTOMER_A/B/C, TB_ADDRESSES_A/B/C) | Table | `raw_tables.sql` |
-| 18-21 | `CRM_AGG_001` | VW_CUSTOMER_UNION, VW_ADDRESSES_UNION, VW_CUSTOMER_XREF, VW_ADDRESSES_XREF | View | `views.sql` |
-| 22-30 | `CRM_AGG_001` | 9 DTs: ENRICHED, GROUPS, GOLDEN, CUSTOMER, HISTORY (x2 entities) | DT | `analytics.sql` |
-| 31-32 | `CRM_SRV_001` | VW_CUSTOMER_360, VW_CUSTOMER_360_FLAT | View | `serve.sql` |
-| 33-50 | `CRM_RAW_001` | 6 FF + 6 SM + 6 TS (file formats, streams, tasks) | Post-deploy | `post_deploy.sql` |
+| 6-11 | `MDM_RAW_001` | 6 Internal Stages (ST_CUSTOMER_A/B/C, ST_ADDRESSES_A/B/C) | Stage | `infrastructure.sql` |
+| 12-17 | `MDM_RAW_001` | 6 RAW Tables (TB_CUSTOMER_A/B/C, TB_ADDRESSES_A/B/C) | Table | `raw_tables.sql` |
+| 18-21 | `MDM_AGG_001` | VW_CUSTOMER_UNION, VW_ADDRESSES_UNION, VW_CUSTOMER_XREF, VW_ADDRESSES_XREF | View | `views.sql` |
+| 22-30 | `MDM_AGG_001` | 9 DTs: ENRICHED, GROUPS, GOLDEN, CUSTOMER, HISTORY (x2 entities) | DT | `analytics.sql` |
+| 31-32 | `MDM_SRV_001` | VW_CUSTOMER_360, VW_CUSTOMER_360_FLAT | View | `serve.sql` |
+| 33-50 | `MDM_RAW_001` | 6 FF + 6 SM + 6 TS (file formats, streams, tasks) | Post-deploy | `post_deploy.sql` |
 
 ### Repository Structure
 
@@ -294,6 +293,7 @@ MasterDataManagement/
   manifest.yml                   DCM project manifest (v2, Jinja templated)
   pre_deploy.sql                 Database + schemas (run before DCM plan)
   post_deploy.sql                File formats, streams, tasks (run after DCM deploy)
+  upload_data.sh                 Upload test data to stages (all 3 CRM sources)
   sources/
     definitions/
       infrastructure.sql         Warehouse + internal stages (DEFINE)
@@ -313,7 +313,6 @@ MasterDataManagement/
   .github/
     workflows/
       update-local-repo.yml      CI/CD: analyze → plan → deploy → test
-  github-workflow-verification_v1.sh   SHA256 integrity check for workflow
 ```
 
 ### Deployment (DCM)
@@ -323,9 +322,9 @@ MasterDataManagement/
 snow sql -f pre_deploy.sql -c <connection>
 
 # 2. DCM analyze + plan + deploy
-snow dcm raw-analyze MASTER_DATA_MANAGEMENT.CRM_AGG_001.MDM_PROJECT -c <connection> --target DEV
-snow dcm plan MASTER_DATA_MANAGEMENT.CRM_AGG_001.MDM_PROJECT -c <connection> --target DEV
-snow dcm deploy MASTER_DATA_MANAGEMENT.CRM_AGG_001.MDM_PROJECT -c <connection> --target DEV
+snow dcm raw-analyze MDM_DEV.MDM_AGG_001.MDM_PROJECT -c <connection> --target DEV
+snow dcm plan MDM_DEV.MDM_AGG_001.MDM_PROJECT -c <connection> --target DEV
+snow dcm deploy MDM_DEV.MDM_AGG_001.MDM_PROJECT -c <connection> --target DEV
 
 # 3. Post-deploy: file formats, streams, tasks
 snow sql -f post_deploy.sql -c <connection>

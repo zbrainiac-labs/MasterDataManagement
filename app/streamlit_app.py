@@ -20,7 +20,7 @@ def load_customers():
                     WHEN dq_score >= 70 THEN 'Good'
                     WHEN dq_score >= 50 THEN 'Fair'
                     ELSE 'Poor' END AS dq_tier
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER
         ORDER BY customer_id
     """)
 
@@ -29,7 +29,7 @@ def load_addresses():
     return conn.query("""
         SELECT address_id, customer_id, address_type, street, city,
                postal_code, country, is_primary
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES
         ORDER BY address_id
     """)
 
@@ -37,21 +37,21 @@ def load_addresses():
 def load_customer_xref():
     return conn.query("""
         SELECT customer_id, source_system, source_key
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_VW_CUSTOMER_XREF
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_CUSTOMER_XREF
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
 def load_address_xref():
     return conn.query("""
         SELECT xref_id, address_id, source_system, source_key
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_VW_ADDRESSES_XREF
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_ADDRESSES_XREF
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
 def load_customer_xref_for_id(customer_id: int):
     return conn.query(f"""
         SELECT customer_id, source_system, source_key
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_VW_CUSTOMER_XREF
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_CUSTOMER_XREF
         WHERE customer_id = {customer_id}
     """)
 
@@ -62,7 +62,7 @@ def load_customer_history():
                dq_score, valid_from,
                CASE WHEN valid_to >= '2099-01-01' THEN NULL ELSE valid_to END AS valid_to,
                is_valid
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY
         ORDER BY customer_id, valid_from
     """)
 
@@ -73,7 +73,7 @@ def load_address_history():
                postal_code, country, is_primary, valid_from,
                CASE WHEN valid_to >= '2099-01-01' THEN NULL ELSE valid_to END AS valid_to,
                is_valid
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES_HISTORY
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES_HISTORY
         ORDER BY address_id, valid_from
     """)
 
@@ -87,7 +87,7 @@ def load_customer_dq_distribution():
                  ELSE 'Poor' END AS dq_tier,
             COUNT(*) AS record_count,
             ROUND(AVG(dq_score), 1) AS avg_score
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER
         GROUP BY dq_tier
         ORDER BY avg_score DESC
     """)
@@ -100,7 +100,7 @@ def load_customer_er_stats():
             SUM(CASE WHEN source_count >= 2 THEN 1 ELSE 0 END) AS merged_records,
             SUM(CASE WHEN source_count = 1 THEN 1 ELSE 0 END) AS unique_records,
             ROUND(AVG(dq_score), 1) AS avg_dq_score
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
@@ -110,14 +110,14 @@ def load_address_stats():
             COUNT(*) AS total_addresses,
             COUNT(DISTINCT customer_id) AS customers_with_address,
             COUNT(DISTINCT country) AS country_count
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
 def load_address_country_dist():
     return conn.query("""
         SELECT country, COUNT(*) AS address_count
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES
         GROUP BY country
         ORDER BY address_count DESC
     """)
@@ -126,7 +126,7 @@ def load_address_country_dist():
 def load_customer_source_counts():
     return conn.query("""
         SELECT source_system, COUNT(*) AS record_count
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_VW_CUSTOMER_UNION
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_CUSTOMER_UNION
         GROUP BY source_system ORDER BY source_system
     """)
 
@@ -134,7 +134,7 @@ def load_customer_source_counts():
 def load_address_source_counts():
     return conn.query("""
         SELECT source_system, COUNT(*) AS record_count
-        FROM MASTER_DATA_MANAGEMENT.CRM_AGG_001.CRMA_AGG_VW_ADDRESSES_UNION
+        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_ADDRESSES_UNION
         GROUP BY source_system ORDER BY source_system
     """)
 
@@ -156,13 +156,13 @@ tab_overview, tab_search, tab_dq, tab_er, tab_history = st.tabs(
 
 # --- OVERVIEW ---
 with tab_overview:
-    total_cust = int(cust_er_stats["TOTAL_GOLDEN"].iloc[0]) if len(cust_er_stats) else 0
-    merged_cust = int(cust_er_stats["MERGED_RECORDS"].iloc[0]) if len(cust_er_stats) else 0
-    unique_cust = int(cust_er_stats["UNIQUE_RECORDS"].iloc[0]) if len(cust_er_stats) else 0
-    avg_dq = float(cust_er_stats["AVG_DQ_SCORE"].iloc[0]) if len(cust_er_stats) else 0
-    total_addr = int(addr_stats["TOTAL_ADDRESSES"].iloc[0]) if len(addr_stats) else 0
-    cust_with_addr = int(addr_stats["CUSTOMERS_WITH_ADDRESS"].iloc[0]) if len(addr_stats) else 0
-    n_countries = int(addr_stats["COUNTRY_COUNT"].iloc[0]) if len(addr_stats) else 0
+    total_cust = int(cust_er_stats["TOTAL_GOLDEN"].iloc[0]) if len(cust_er_stats) and pd.notna(cust_er_stats["TOTAL_GOLDEN"].iloc[0]) else 0
+    merged_cust = int(cust_er_stats["MERGED_RECORDS"].iloc[0]) if len(cust_er_stats) and pd.notna(cust_er_stats["MERGED_RECORDS"].iloc[0]) else 0
+    unique_cust = int(cust_er_stats["UNIQUE_RECORDS"].iloc[0]) if len(cust_er_stats) and pd.notna(cust_er_stats["UNIQUE_RECORDS"].iloc[0]) else 0
+    avg_dq = float(cust_er_stats["AVG_DQ_SCORE"].iloc[0]) if len(cust_er_stats) and pd.notna(cust_er_stats["AVG_DQ_SCORE"].iloc[0]) else 0
+    total_addr = int(addr_stats["TOTAL_ADDRESSES"].iloc[0]) if len(addr_stats) and pd.notna(addr_stats["TOTAL_ADDRESSES"].iloc[0]) else 0
+    cust_with_addr = int(addr_stats["CUSTOMERS_WITH_ADDRESS"].iloc[0]) if len(addr_stats) and pd.notna(addr_stats["CUSTOMERS_WITH_ADDRESS"].iloc[0]) else 0
+    n_countries = int(addr_stats["COUNTRY_COUNT"].iloc[0]) if len(addr_stats) and pd.notna(addr_stats["COUNTRY_COUNT"].iloc[0]) else 0
     addr_coverage = round(cust_with_addr / total_cust * 100, 1) if total_cust else 0
 
     col_left, col_right = st.columns(2)

@@ -1,8 +1,8 @@
 # =============================================================================
 # SQL Validation Tests for MDM Project
 # Format: description | sql | expected
-# Variables: {{DATABASE}} = MASTER_DATA_MANAGEMENT, {{SCHEMA}} = CRM_AGG_001
-# NOTE: DTs cannot be cloned, so DT queries use hardcoded CRM_AGG_001 (not {{SCHEMA}})
+# Variables: {{DATABASE}} = MDM_DEV, {{SCHEMA}} = MDM_AGG_001
+# NOTE: DTs cannot be cloned, so DT queries use hardcoded MDM_AGG_001 (not {{SCHEMA}})
 # Only INFORMATION_SCHEMA and negative tests use {{SCHEMA}} for clone compatibility
 # =============================================================================
 
@@ -10,12 +10,12 @@
 # POSITIVE TESTS — Object existence
 # =============================================================================
 
-RAW customer table A exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_CUSTOMER_A'; | true
-RAW customer table B exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_CUSTOMER_B'; | true
-RAW customer table C exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_CUSTOMER_C'; | true
-RAW address table A exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_ADDRESSES_A'; | true
-RAW address table B exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_ADDRESSES_B'; | true
-RAW address table C exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_ADDRESSES_C'; | true
+RAW customer table A exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_CUSTOMER_A'; | true
+RAW customer table B exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_CUSTOMER_B'; | true
+RAW customer table C exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_CUSTOMER_C'; | true
+RAW address table A exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_ADDRESSES_A'; | true
+RAW address table B exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_ADDRESSES_B'; | true
+RAW address table C exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_RAW_001' AND TABLE_NAME = 'CRMI_RAW_TB_ADDRESSES_C'; | true
 DT_CUSTOMER exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_DT_CUSTOMER'; | true
 DT_CUSTOMER_ENRICHED exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_DT_CUSTOMER_ENRICHED'; | true
 DT_CUSTOMER_GROUPS exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_DT_CUSTOMER_GROUPS'; | true
@@ -23,59 +23,59 @@ DT_CUSTOMER_GOLDEN exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'fals
 DT_CUSTOMER_HISTORY exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_DT_CUSTOMER_HISTORY'; | true
 DT_ADDRESSES exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_DT_ADDRESSES'; | true
 DT_ADDRESSES_HISTORY exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_DT_ADDRESSES_HISTORY'; | true
-Serving view CUSTOMER_360 exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_SRV_001' AND TABLE_NAME = 'CRMS_AGG_VW_CUSTOMER_360'; | true
-Serving view CUSTOMER_360_FLAT exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CRM_SRV_001' AND TABLE_NAME = 'CRMS_AGG_VW_CUSTOMER_360_FLAT'; | true
+Serving view CUSTOMER_360 exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_SRV_001' AND TABLE_NAME = 'CRMS_AGG_VW_CUSTOMER_360'; | true
+Serving view CUSTOMER_360_FLAT exists | SELECT CASE WHEN COUNT(*) > 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'MDM_SRV_001' AND TABLE_NAME = 'CRMS_AGG_VW_CUSTOMER_360_FLAT'; | true
 
 # =============================================================================
 # POSITIVE TESTS — Data loaded (RAW layer has records)
 # =============================================================================
 
-RAW customer A has 600 records | SELECT CASE WHEN COUNT(*) = 600 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_RAW_001.CRMI_RAW_TB_CUSTOMER_A; | true
-RAW customer B has 400 records | SELECT CASE WHEN COUNT(*) = 400 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_RAW_001.CRMI_RAW_TB_CUSTOMER_B; | true
-RAW customer C has 500 records | SELECT CASE WHEN COUNT(*) = 500 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_RAW_001.CRMI_RAW_TB_CUSTOMER_C; | true
-Total source records = 1500 | SELECT CASE WHEN (SELECT COUNT(*) FROM {{DATABASE}}.CRM_RAW_001.CRMI_RAW_TB_CUSTOMER_A) + (SELECT COUNT(*) FROM {{DATABASE}}.CRM_RAW_001.CRMI_RAW_TB_CUSTOMER_B) + (SELECT COUNT(*) FROM {{DATABASE}}.CRM_RAW_001.CRMI_RAW_TB_CUSTOMER_C) = 1500 THEN 'true' ELSE 'false' END AS result; | true
+RAW customer A has 600 records | SELECT CASE WHEN COUNT(*) = 600 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_RAW_001.CRMI_RAW_TB_CUSTOMER_A; | true
+RAW customer B has 400 records | SELECT CASE WHEN COUNT(*) = 400 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_RAW_001.CRMI_RAW_TB_CUSTOMER_B; | true
+RAW customer C has 500 records | SELECT CASE WHEN COUNT(*) = 500 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_RAW_001.CRMI_RAW_TB_CUSTOMER_C; | true
+Total source records = 1500 | SELECT CASE WHEN (SELECT COUNT(*) FROM {{DATABASE}}.MDM_RAW_001.CRMI_RAW_TB_CUSTOMER_A) + (SELECT COUNT(*) FROM {{DATABASE}}.MDM_RAW_001.CRMI_RAW_TB_CUSTOMER_B) + (SELECT COUNT(*) FROM {{DATABASE}}.MDM_RAW_001.CRMI_RAW_TB_CUSTOMER_C) = 1500 THEN 'true' ELSE 'false' END AS result; | true
 
 # =============================================================================
 # POSITIVE TESTS — Golden record counts and merge rate
 # =============================================================================
 
-Golden records = 1115 | SELECT CASE WHEN COUNT(*) = 1115 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER; | true
-Golden addresses = 1115 | SELECT CASE WHEN COUNT(*) = 1115 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES; | true
-Merged customers (2+ sources) >= 270 | SELECT CASE WHEN COUNT(*) >= 270 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE source_count >= 2; | true
-Three-source merges >= 35 | SELECT CASE WHEN COUNT(*) >= 35 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE source_count = 3; | true
-Serving view count matches golden | SELECT CASE WHEN (SELECT COUNT(*) FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER) = (SELECT COUNT(*) FROM {{DATABASE}}.CRM_SRV_001.CRMS_AGG_VW_CUSTOMER_360) THEN 'true' ELSE 'false' END AS result; | true
+Golden records = 1115 | SELECT CASE WHEN COUNT(*) = 1115 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER; | true
+Golden addresses = 1115 | SELECT CASE WHEN COUNT(*) = 1115 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES; | true
+Merged customers (2+ sources) >= 270 | SELECT CASE WHEN COUNT(*) >= 270 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE source_count >= 2; | true
+Three-source merges >= 35 | SELECT CASE WHEN COUNT(*) >= 35 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE source_count = 3; | true
+Serving view count matches golden | SELECT CASE WHEN (SELECT COUNT(*) FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER) = (SELECT COUNT(*) FROM {{DATABASE}}.MDM_SRV_001.CRMS_AGG_VW_CUSTOMER_360) THEN 'true' ELSE 'false' END AS result; | true
 
 # =============================================================================
 # POSITIVE TESTS — DQ scoring
 # =============================================================================
 
-Avg DQ score >= 90 | SELECT CASE WHEN AVG(dq_score) >= 90 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER; | true
-DQ Excellent tier >= 900 records | SELECT CASE WHEN COUNT(*) >= 900 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score >= 90; | true
-No DQ score below 0 | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score < 0; | true
-No DQ score above 100 | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score > 100; | true
+Avg DQ score >= 90 | SELECT CASE WHEN AVG(dq_score) >= 90 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER; | true
+DQ Excellent tier >= 900 records | SELECT CASE WHEN COUNT(*) >= 900 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score >= 90; | true
+No DQ score below 0 | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score < 0; | true
+No DQ score above 100 | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score > 100; | true
 
 # =============================================================================
 # POSITIVE TESTS — Address 1:1 relationship
 # =============================================================================
 
-Every customer has an address | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER c WHERE NOT EXISTS (SELECT 1 FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES a WHERE a.customer_id = c.customer_id); | true
-No customer has multiple addresses | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM (SELECT customer_id FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES GROUP BY customer_id HAVING COUNT(*) > 1); | true
+Every customer has an address | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER c WHERE NOT EXISTS (SELECT 1 FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES a WHERE a.customer_id = c.customer_id); | true
+No customer has multiple addresses | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM (SELECT customer_id FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES GROUP BY customer_id HAVING COUNT(*) > 1); | true
 
 # =============================================================================
 # POSITIVE TESTS — SCD2 history integrity
 # =============================================================================
 
-Every customer in history | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER c WHERE NOT EXISTS (SELECT 1 FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY h WHERE h.customer_id = c.customer_id AND h.is_valid = TRUE); | true
-No customer with multiple valid history rows | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM (SELECT customer_id FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY WHERE is_valid = TRUE GROUP BY customer_id HAVING COUNT(*) > 1); | true
-No historical row with VALID_TO = 9999-12-31 | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY WHERE is_valid = FALSE AND valid_to = '9999-12-31'::TIMESTAMP_LTZ; | true
-Every address in history | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES a WHERE NOT EXISTS (SELECT 1 FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_ADDRESSES_HISTORY h WHERE h.customer_id = a.customer_id AND h.is_valid = TRUE); | true
+Every customer in history | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER c WHERE NOT EXISTS (SELECT 1 FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY h WHERE h.customer_id = c.customer_id AND h.is_valid = TRUE); | true
+No customer with multiple valid history rows | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM (SELECT customer_id FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY WHERE is_valid = TRUE GROUP BY customer_id HAVING COUNT(*) > 1); | true
+No historical row with VALID_TO = 9999-12-31 | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY WHERE is_valid = FALSE AND valid_to = '9999-12-31'::TIMESTAMP_LTZ; | true
+Every address in history | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES a WHERE NOT EXISTS (SELECT 1 FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES_HISTORY h WHERE h.customer_id = a.customer_id AND h.is_valid = TRUE); | true
 
 # =============================================================================
 # POSITIVE TESTS — Completeness
 # =============================================================================
 
-All customers have first_name | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE first_name IS NULL; | true
-Completeness >= 85% (all 4 fields) | SELECT CASE WHEN ROUND(SUM(CASE WHEN first_name IS NOT NULL AND last_name IS NOT NULL AND email IS NOT NULL AND phone IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) >= 85 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER; | true
+All customers have first_name | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE first_name IS NULL; | true
+Completeness >= 85% (all 4 fields) | SELECT CASE WHEN ROUND(SUM(CASE WHEN first_name IS NOT NULL AND last_name IS NOT NULL AND email IS NOT NULL AND phone IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) >= 85 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER; | true
 
 # =============================================================================
 # NEGATIVE TESTS — Things that should NOT exist
@@ -89,7 +89,7 @@ No old VW_CUSTOMER_GROUPS view (replaced by DT) | SELECT CASE WHEN COUNT(*) = 0 
 No old VW_CUSTOMER_GOLDEN view (replaced by DT) | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_VW_CUSTOMER_GOLDEN' AND TABLE_TYPE = 'VIEW'; | true
 No old VW_ADDRESSES_GROUPS view (replaced by DT) | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_VW_ADDRESSES_GROUPS' AND TABLE_TYPE = 'VIEW'; | true
 No old VW_ADDRESSES_GOLDEN view (replaced by DT) | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{{SCHEMA}}' AND TABLE_NAME = 'CRMA_AGG_VW_ADDRESSES_GOLDEN' AND TABLE_TYPE = 'VIEW'; | true
-No Poor DQ tier records | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score < 50; | true
-No duplicate customer_ids in golden | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM (SELECT customer_id FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER GROUP BY customer_id HAVING COUNT(*) > 1); | true
-No NULL customer_id in golden | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE customer_id IS NULL; | true
-No NULL source_count | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.CRM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE source_count IS NULL OR source_count < 1; | true
+No Poor DQ tier records | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE dq_score < 50; | true
+No duplicate customer_ids in golden | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM (SELECT customer_id FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER GROUP BY customer_id HAVING COUNT(*) > 1); | true
+No NULL customer_id in golden | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE customer_id IS NULL; | true
+No NULL source_count | SELECT CASE WHEN COUNT(*) = 0 THEN 'true' ELSE 'false' END AS result FROM {{DATABASE}}.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER WHERE source_count IS NULL OR source_count < 1; | true

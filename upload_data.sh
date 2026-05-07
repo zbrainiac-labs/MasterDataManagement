@@ -36,8 +36,8 @@ set -e
 # --- Default values ---
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="$BASE_DIR/output"
-DATABASE="MASTER_DATA_MANAGEMENT"
-SCHEMA="CRM_RAW_001"
+DATABASE="MDM_DEV"
+SCHEMA="MDM_RAW_001"
 CONNECTION_NAME=""
 DRY_RUN=false
 INITIAL_ONLY=false
@@ -214,6 +214,16 @@ if [[ "$UPDATES_ONLY" != "true" ]]; then
     "$DATA_DIR/initial/B/address" \
     "CRMI_RAW_ST_ADDRESSES_B" \
     "CRM B Addresses (Initial)"
+  
+  upload_to_stage \
+    "$DATA_DIR/initial/C/customer" \
+    "CRMI_RAW_ST_CUSTOMER_C" \
+    "CRM C Customers (Initial)"
+  
+  upload_to_stage \
+    "$DATA_DIR/initial/C/address" \
+    "CRMI_RAW_ST_ADDRESSES_C" \
+    "CRM C Addresses (Initial)"
 fi
 
 # =============================================================================
@@ -244,6 +254,16 @@ if [[ "$INITIAL_ONLY" != "true" ]]; then
     "$DATA_DIR/update/B/address" \
     "CRMI_RAW_ST_ADDRESSES_B" \
     "CRM B Addresses (Updates)"
+  
+  upload_to_stage \
+    "$DATA_DIR/update/C/customer" \
+    "CRMI_RAW_ST_CUSTOMER_C" \
+    "CRM C Customers (Updates)"
+  
+  upload_to_stage \
+    "$DATA_DIR/update/C/address" \
+    "CRMI_RAW_ST_ADDRESSES_C" \
+    "CRM C Addresses (Updates)"
 fi
 
 # =============================================================================
@@ -261,8 +281,10 @@ if [[ "$DRY_RUN" != "true" && $SUCCESSFUL_UPLOADS -gt 0 ]]; then
     USE SCHEMA $SCHEMA;
     ALTER STAGE CRMI_RAW_ST_CUSTOMER_A REFRESH;
     ALTER STAGE CRMI_RAW_ST_CUSTOMER_B REFRESH;
+    ALTER STAGE CRMI_RAW_ST_CUSTOMER_C REFRESH;
     ALTER STAGE CRMI_RAW_ST_ADDRESSES_A REFRESH;
     ALTER STAGE CRMI_RAW_ST_ADDRESSES_B REFRESH;
+    ALTER STAGE CRMI_RAW_ST_ADDRESSES_C REFRESH;
   " > /dev/null 2>&1 || echo "  [WARN] Stage refresh may require additional permissions"
   
   echo "[OK] Stage metadata refreshed"
