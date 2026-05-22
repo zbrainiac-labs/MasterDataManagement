@@ -62,16 +62,30 @@ crm_c AS (
 )
 SELECT * FROM crm_a UNION ALL SELECT * FROM crm_b UNION ALL SELECT * FROM crm_c;
 
-DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_CUSTOMER_XREF
-    COMMENT = 'Live cross-reference mapping from source keys to master customer IDs.'
+DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_CUSTOMER_XREF_AI
+    COMMENT = 'Live cross-reference mapping from source keys to master customer IDs. AI pipeline.'
 AS
 SELECT ROW_NUMBER() OVER (ORDER BY customer_id, source_system, source_key) AS xref_id,
     customer_id, source_system, source_key, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS created_at
-FROM {{db}}.{{agg_schema}}.CRMA_AGG_DT_CUSTOMER_GROUPS;
+FROM {{db}}.{{agg_schema}}.CRMA_AGG_DT_CUSTOMER_GROUPS_AI;
 
-DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_ADDRESSES_XREF
-    COMMENT = 'Live cross-reference mapping from source keys to master address IDs.'
+DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_ADDRESSES_XREF_AI
+    COMMENT = 'Live cross-reference mapping from source keys to master address IDs. AI pipeline.'
 AS
 SELECT ROW_NUMBER() OVER (ORDER BY address_id, source_system, source_key) AS xref_id,
     address_id, source_system, source_key, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS created_at
-FROM {{db}}.{{agg_schema}}.CRMA_AGG_DT_ADDRESSES_GROUPS;
+FROM {{db}}.{{agg_schema}}.CRMA_AGG_DT_ADDRESSES_GROUPS_AI;
+
+DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_CUSTOMER_XREF_FUZZY
+    COMMENT = 'Live cross-reference mapping from source keys to master customer IDs. Fuzzy pipeline.'
+AS
+SELECT ROW_NUMBER() OVER (ORDER BY customer_id, source_system, source_key) AS xref_id,
+    customer_id, source_system, source_key, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS created_at
+FROM {{db}}.{{agg_schema}}.CRMA_AGG_DT_CUSTOMER_GROUPS_FUZZY;
+
+DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_ADDRESSES_XREF_FUZZY
+    COMMENT = 'Live cross-reference mapping from source keys to master address IDs. Fuzzy pipeline.'
+AS
+SELECT ROW_NUMBER() OVER (ORDER BY address_id, source_system, source_key) AS xref_id,
+    address_id, source_system, source_key, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS created_at
+FROM {{db}}.{{agg_schema}}.CRMA_AGG_DT_ADDRESSES_GROUPS_FUZZY;

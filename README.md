@@ -59,7 +59,7 @@ The Showcase is a  fully functional MDM pipeline that merges **1,800 customer re
 |----|--------------------------------|----------------------------------------------------------------|----------|
 | CAP-01 | Event-driven ingestion         | Stages + Directory Table Streams + Serverless Tasks            | **Done** |
 | CAP-02 | Column harmonization           | Views with INITCAP, LOWER, REGEXP_REPLACE                     | **Done** |
-| CAP-03 | AI-enhanced entity resolution  | CORTEX.COMPLETE (nickname), AI_CLASSIFY (fake detection)       | **Done** |
+| CAP-03 | AI-enhanced entity resolution  | CORTEX.COMPLETE (nickname), AI_CLASSIFY (fake detection) — AI pipeline only | **Done** |
 | CAP-04 | Deterministic matching         | Email exact, phone normalized (last 10 digits)                 | **Done** |
 | CAP-05 | Probabilistic matching         | JAROWINKLER_SIMILARITY, SOUNDEX, blocking strategy             | **Done** |
 | CAP-06 | Survivorship rules             | FIRST_VALUE() ordered by completeness, trust, recency          | **Done** |
@@ -88,9 +88,11 @@ The Showcase is a  fully functional MDM pipeline that merges **1,800 customer re
 | next     | TB, DT, VW, ST, FF, TS, SM | Object type |
 | last     | name | Descriptive name + source suffix |
 
-**Examples:** `CRMI_RAW_TB_CUSTOMER_A`, `CRMA_AGG_DT_CUSTOMER`, `CRMS_AGG_VW_CUSTOMER_360`
+**Examples:** `CRMI_RAW_TB_CUSTOMER_A`, `CRMA_AGG_DT_CUSTOMER_AI`, `CRMA_AGG_DT_CUSTOMER_FUZZY`, `CRMS_AGG_VW_CUSTOMER_360_AI`
 
 ### Architecture
+
+Two isolated pipelines run in parallel from the same source data:
 
 ```
   CRM_A (CSV)            CRM_B (CSV)            CRM_C (CSV)
@@ -98,45 +100,81 @@ The Showcase is a  fully functional MDM pipeline that merges **1,800 customer re
       |                      |                      |
       v                      v                      v
 +------------------------------------------------------------------------+
-|  RAW (MDM_RAW_001)                                                     |
+|  RAW (MDM_RAW_v001)                                                    |
 |  Stages -> Directory Table Streams -> Serverless Tasks -> COPY INTO    |
 |  6 append-only tables (3 customer + 3 address), ROW_TIMESTAMP=TRUE     |
 +------------------------------------------------------------------------+
       |
       v
 +------------------------------------------------------------------------+
-|  INTEGRATION (MDM_AGG_001)                                             |
+|  INTEGRATION (MDM_AGG_v001)                                            |
 |                                                                        |
-|  View Pipeline:                                                        |
-|    VW_CUSTOMER_UNION       Harmonize 3 sources into common schema      |
+|  VW_CUSTOMER_UNION       Harmonize 3 sources into common schema        |
 |         |                                                              |
-|    DT_CUSTOMER_ENRICHED     Cortex AI (materialized Dynamic Table)      |
-|         |                  Nicknames + fake detection, cached results  |
-|         |                                                              |
-|    DT_CUSTOMER_GROUPS       Entity resolution with blocking strategy    |
-|         |                  Deterministic + Probabilistic matching       |
-|         |                                                              |
-|    DT_CUSTOMER_GOLDEN       Survivorship + DQ scoring (0-100)           |
-|         |                                                              |
-|         +---> DT_CUSTOMER           Current golden (Dynamic Table)     |
-|         |       |                                                      |
-|         |       +---> DT_CUSTOMER_HISTORY   SCD2 (Dynamic Table)        |
-|         |                                                              |
-|    DT_ADDRESSES_*          Same pipeline for addresses (all DTs)        |
-|         +---> DT_ADDRESSES          Current golden (Dynamic Table)     |
-|               +---> DT_ADDRESSES_HISTORY   SCD2 (Dynamic Table)        |
+|    +----+----+                                                         |
+|    |         |                                                         |
+|    v         v                                                         |
+|  [AI]      [FUZZY]                                                     |
+|                                                                        |
+|  AI PIPELINE (Cortex-powered):                                         |
+|    DT_CUSTOMER_ENRICHED_AI   Cortex COMPLETE + AI_CLASSIFY             |
+|    DT_CUSTOMER_GROUPS_AI     Entity resolution (blocking + matching)   |
+|    DT_CUSTOMER_GOLDEN_AI     Survivorship + DQ scoring                 |
+|    DT_CUSTOMER_AI            Current golden records                    |
+|    DT_CUSTOMER_HISTORY_AI    SCD2 history                              |
+|    DT_ADDRESSES_*_AI         Full address pipeline (5 DTs)             |
+|                                                                        |
+|  FUZZY PIPELINE (Classical matching, zero AI cost):                    |
+|    DT_CUSTOMER_ENRICHED_FUZZY  INITCAP(first_name), no AI calls        |
+|    DT_CUSTOMER_GROUPS_FUZZY    Entity resolution (same blocking)       |
+|    DT_CUSTOMER_GOLDEN_FUZZY    Survivorship + DQ scoring               |
+|    DT_CUSTOMER_FUZZY           Current golden records                  |
+|    DT_CUSTOMER_HISTORY_FUZZY   SCD2 history                            |
+|    DT_ADDRESSES_*_FUZZY        Full address pipeline (5 DTs)           |
 +------------------------------------------------------------------------+
       |
       v
 +------------------------------------------------------------------------+
-|  SERVING (MDM_SRV_001)                                                 |
-|  VW_CUSTOMER_360       Nested JSON (APIs, modern apps)                 |
-|  VW_CUSTOMER_360_FLAT  Flat rows (Tableau, Power BI)                   |
+|  SERVING (MDM_SRV_v001)                                                |
+|  VW_CUSTOMER_360_AI / VW_CUSTOMER_360_FUZZY         Nested JSON        |
+|  VW_CUSTOMER_360_FLAT_AI / VW_CUSTOMER_360_FLAT_FUZZY   Flat rows      |
 +------------------------------------------------------------------------+
       |
       v
-  Streamlit Dashboard (5 tabs: Overview, Search, DQ, ER, SCD History)
+  Streamlit Dashboard (sidebar toggle: AI vs Fuzzy pipeline)
 ```
+
+### Pipeline Comparison: AI vs. Fuzzy
+
+Both pipelines process the same 1,500 source records. The AI pipeline uses Cortex AI for nickname resolution and fake name detection; the Fuzzy pipeline uses only classical string matching (JAROWINKLER, SOUNDEX).
+
+| Metric | AI | Fuzzy | Delta |
+|--------|-----|-------|-------|
+| Golden customers | 1,115 | 1,127 | +12 (fewer merges) |
+| Merged (2+ sources) | 272 | 264 | -8 |
+| Merge rate | 25.7% | 24.9% | -0.8pp |
+| Avg Customer DQ score | 95.7 | 95.7 | identical |
+| Avg Address DQ score | 99.7 | 99.7 | identical |
+| DQ Excellent (>=90) | 1,018 | 1,029 | +11 |
+| DQ Good (70-89) | 82 | 83 | +1 |
+| DQ Fair (50-69) | 15 | 15 | 0 |
+| DQ Poor (<50) | 0 | 0 | 0 |
+
+```
+DQ Tier Distribution (customers)
+
+           AI    FUZZY
+Excellent  1018  1029   ████████████████████████████████████████
+Good         82    83   ███
+Fair         15    15   █
+Poor          0     0
+```
+
+**Key Takeaways:**
+- The AI pipeline merges 8 more records (Bill=William, Bob=Robert via Cortex nickname resolution)
+- DQ scores are nearly identical — the FUZZY pipeline never fires the fake-name penalty (-20) since `is_fake_name` is always FALSE
+- The Fuzzy pipeline has **zero Cortex AI cost** at a marginal 0.8pp merge rate trade-off
+- Both pipelines produce 0 Poor-tier records
 
 ### Entity Resolution
 
@@ -254,10 +292,10 @@ Base score 100. Error: -20, Warning: -5, Bonus: +5/+10. Clamped 0-100.
 | DQ-008  | phone       | Not placeholder          | Error    | -20    | Done |
 | DQ-009  | postal_code | Valid format for country | Warning  | -5     | Planned |
 | DQ-010  | country     | Valid ISO 3166-1 code    | Error    | -20    | Planned |
-| DQ-011  | street      | Minimum length >= 5      | Warning  | -5     | Planned |
-| DQ-012  | city        | Not null for addresses   | Error    | -20    | Planned |
+| DQ-011  | street      | Minimum length >= 5      | Warning  | -5     | Done |
+| DQ-012  | city        | Not null for addresses   | Error    | -20    | Done |
 | DQ-X03  | first_name, email | Name appears in email | Bonus  | +5    | Done |
-| DQ-X04  | street, postal_code, city | Complete address | Bonus | +10 | Planned |
+| DQ-X04  | street, postal_code, city | Complete address | Bonus | +10 | Done |
 | DQ-C01  | Customer    | Has contact method       | Error    | -20    | Done |
 | DQ-C02  | Customer    | Has complete name        | Error    | -20    | Done |
 | DQ-AI01 | first_name  | Cortex AI fake name flag | Error    | -20    | Done |
@@ -274,17 +312,17 @@ Base score 100. Error: -20, Warning: -5, Bonus: +5/+10. Clamped 0-100.
 
 No stored procedures, no tasks, no imperative DML — just Dynamic Tables with `TARGET_LAG = '1 hour'`.
 
-### Object Inventory (50 objects)
+### Object Inventory (68 objects)
 
 | # | Schema | Object | Type | Definition File |
 |---|--------|--------|------|-----------------|
 | 1-5 | -- | Database, Warehouse, 3 Schemas | Infra | `pre_deploy.sql` + `infrastructure.sql` |
-| 6-11 | `MDM_RAW_001` | 6 Internal Stages (ST_CUSTOMER_A/B/C, ST_ADDRESSES_A/B/C) | Stage | `infrastructure.sql` |
-| 12-17 | `MDM_RAW_001` | 6 RAW Tables (TB_CUSTOMER_A/B/C, TB_ADDRESSES_A/B/C) | Table | `raw_tables.sql` |
-| 18-21 | `MDM_AGG_001` | VW_CUSTOMER_UNION, VW_ADDRESSES_UNION, VW_CUSTOMER_XREF, VW_ADDRESSES_XREF | View | `views.sql` |
-| 22-30 | `MDM_AGG_001` | 9 DTs: ENRICHED, GROUPS, GOLDEN, CUSTOMER, HISTORY (x2 entities) | DT | `analytics.sql` |
-| 31-32 | `MDM_SRV_001` | VW_CUSTOMER_360, VW_CUSTOMER_360_FLAT | View | `serve.sql` |
-| 33-50 | `MDM_RAW_001` | 6 FF + 6 SM + 6 TS (file formats, streams, tasks) | Post-deploy | `post_deploy.sql` |
+| 6-11 | `MDM_RAW_v001` | 6 Internal Stages (ST_CUSTOMER_A/B/C, ST_ADDRESSES_A/B/C) | Stage | `infrastructure.sql` |
+| 12-17 | `MDM_RAW_v001` | 6 RAW Tables (TB_CUSTOMER_A/B/C, TB_ADDRESSES_A/B/C) | Table | `raw_tables.sql` |
+| 18-21 | `MDM_AGG_v001` | VW_CUSTOMER_UNION, VW_ADDRESSES_UNION + 4 XREF views (AI/FUZZY) | View | `views.sql` |
+| 22-39 | `MDM_AGG_v001` | 18 DTs: 9 AI pipeline + 9 FUZZY pipeline | DT | `analytics.sql` |
+| 40-43 | `MDM_SRV_v001` | VW_CUSTOMER_360_AI/FUZZY, VW_CUSTOMER_360_FLAT_AI/FUZZY | View | `serve.sql` |
+| 44-61 | `MDM_RAW_v001` | 6 FF + 6 SM + 6 TS (file formats, streams, tasks) | Post-deploy | `post_deploy.sql` |
 
 ### Repository Structure
 

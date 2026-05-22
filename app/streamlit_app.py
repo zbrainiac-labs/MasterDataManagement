@@ -10,9 +10,16 @@ st.set_page_config(
 
 conn = st.connection("snowflake")
 
+PIPELINE_SUFFIX = {"AI (Cortex-powered)": "_AI", "Fuzzy (Classical)": "_FUZZY"}
+
+pipeline_choice = st.sidebar.radio(
+    "Pipeline", list(PIPELINE_SUFFIX.keys()), index=0
+)
+suffix = PIPELINE_SUFFIX[pipeline_choice]
+
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_customers():
-    return conn.query("""
+def load_customers(sfx: str):
+    return conn.query(f"""
         SELECT customer_id, first_name, last_name,
                first_name || ' ' || last_name AS full_name,
                email, phone, dq_score, source_count, last_updated,
@@ -20,66 +27,66 @@ def load_customers():
                     WHEN dq_score >= 70 THEN 'Good'
                     WHEN dq_score >= 50 THEN 'Fair'
                     ELSE 'Poor' END AS dq_tier
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_CUSTOMER{sfx}
         ORDER BY customer_id
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_addresses():
-    return conn.query("""
+def load_addresses(sfx: str):
+    return conn.query(f"""
         SELECT address_id, customer_id, address_type, street, city,
                postal_code, country, is_primary
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_ADDRESSES{sfx}
         ORDER BY address_id
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_customer_xref():
-    return conn.query("""
-        SELECT customer_id, source_system, source_key
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_CUSTOMER_XREF
-    """)
-
-@st.cache_data(ttl=timedelta(minutes=5))
-def load_address_xref():
-    return conn.query("""
-        SELECT xref_id, address_id, source_system, source_key
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_ADDRESSES_XREF
-    """)
-
-@st.cache_data(ttl=timedelta(minutes=5))
-def load_customer_xref_for_id(customer_id: int):
+def load_customer_xref(sfx: str):
     return conn.query(f"""
         SELECT customer_id, source_system, source_key
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_CUSTOMER_XREF
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_VW_CUSTOMER_XREF{sfx}
+    """)
+
+@st.cache_data(ttl=timedelta(minutes=5))
+def load_address_xref(sfx: str):
+    return conn.query(f"""
+        SELECT xref_id, address_id, source_system, source_key
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_VW_ADDRESSES_XREF{sfx}
+    """)
+
+@st.cache_data(ttl=timedelta(minutes=5))
+def load_customer_xref_for_id(sfx: str, customer_id: int):
+    return conn.query(f"""
+        SELECT customer_id, source_system, source_key
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_VW_CUSTOMER_XREF{sfx}
         WHERE customer_id = {customer_id}
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_customer_history():
-    return conn.query("""
+def load_customer_history(sfx: str):
+    return conn.query(f"""
         SELECT customer_id, first_name, last_name, email, phone,
                dq_score, valid_from,
                CASE WHEN valid_to >= '2099-01-01' THEN NULL ELSE valid_to END AS valid_to,
                is_valid
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER_HISTORY
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_CUSTOMER_HISTORY{sfx}
         ORDER BY customer_id, valid_from
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_address_history():
-    return conn.query("""
+def load_address_history(sfx: str):
+    return conn.query(f"""
         SELECT address_id, customer_id, address_type, street, city,
                postal_code, country, is_primary, valid_from,
                CASE WHEN valid_to >= '2099-01-01' THEN NULL ELSE valid_to END AS valid_to,
                is_valid
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES_HISTORY
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_ADDRESSES_HISTORY{sfx}
         ORDER BY address_id, valid_from
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_customer_dq_distribution():
-    return conn.query("""
+def load_customer_dq_distribution(sfx: str):
+    return conn.query(f"""
         SELECT
             CASE WHEN dq_score >= 90 THEN 'Excellent'
                  WHEN dq_score >= 70 THEN 'Good'
@@ -87,37 +94,37 @@ def load_customer_dq_distribution():
                  ELSE 'Poor' END AS dq_tier,
             COUNT(*) AS record_count,
             ROUND(AVG(dq_score), 1) AS avg_score
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_CUSTOMER{sfx}
         GROUP BY dq_tier
         ORDER BY avg_score DESC
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_customer_er_stats():
-    return conn.query("""
+def load_customer_er_stats(sfx: str):
+    return conn.query(f"""
         SELECT
             COUNT(DISTINCT customer_id) AS total_golden,
             SUM(CASE WHEN source_count >= 2 THEN 1 ELSE 0 END) AS merged_records,
             SUM(CASE WHEN source_count = 1 THEN 1 ELSE 0 END) AS unique_records,
             ROUND(AVG(dq_score), 1) AS avg_dq_score
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_CUSTOMER
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_CUSTOMER{sfx}
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_address_stats():
-    return conn.query("""
+def load_address_stats(sfx: str):
+    return conn.query(f"""
         SELECT
             COUNT(*) AS total_addresses,
             COUNT(DISTINCT customer_id) AS customers_with_address,
             COUNT(DISTINCT country) AS country_count
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_ADDRESSES{sfx}
     """)
 
 @st.cache_data(ttl=timedelta(minutes=5))
-def load_address_country_dist():
-    return conn.query("""
+def load_address_country_dist(sfx: str):
+    return conn.query(f"""
         SELECT country, COUNT(*) AS address_count
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_DT_ADDRESSES
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_DT_ADDRESSES{sfx}
         GROUP BY country
         ORDER BY address_count DESC
     """)
@@ -126,7 +133,7 @@ def load_address_country_dist():
 def load_customer_source_counts():
     return conn.query("""
         SELECT source_system, COUNT(*) AS record_count
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_CUSTOMER_UNION
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_VW_CUSTOMER_UNION
         GROUP BY source_system ORDER BY source_system
     """)
 
@@ -134,20 +141,21 @@ def load_customer_source_counts():
 def load_address_source_counts():
     return conn.query("""
         SELECT source_system, COUNT(*) AS record_count
-        FROM MDM_DEV.MDM_AGG_001.CRMA_AGG_VW_ADDRESSES_UNION
+        FROM MDM_DEV.MDM_AGG_v001.CRMA_AGG_VW_ADDRESSES_UNION
         GROUP BY source_system ORDER BY source_system
     """)
 
-customers_df = load_customers()
-addresses_df = load_addresses()
-cust_er_stats = load_customer_er_stats()
-addr_stats = load_address_stats()
-cust_dq_dist = load_customer_dq_distribution()
-country_dist = load_address_country_dist()
+customers_df = load_customers(suffix)
+addresses_df = load_addresses(suffix)
+cust_er_stats = load_customer_er_stats(suffix)
+addr_stats = load_address_stats(suffix)
+cust_dq_dist = load_customer_dq_distribution(suffix)
+country_dist = load_address_country_dist(suffix)
 cust_source_counts = load_customer_source_counts()
 addr_source_counts = load_address_source_counts()
 
 st.title(":busts_in_silhouette: Customer 360 — MDM Dashboard")
+st.caption(f"Pipeline: **{pipeline_choice}**")
 
 tab_overview, tab_search, tab_dq, tab_er, tab_history = st.tabs(
     [":bar_chart: Overview", ":mag: Customer Search", ":white_check_mark: Data Quality",
@@ -253,7 +261,7 @@ with tab_search:
         if selected_id:
             cust = filtered[filtered["CUSTOMER_ID"] == selected_id].iloc[0]
             addr = addresses_df[addresses_df["CUSTOMER_ID"] == selected_id]
-            c_xref = load_customer_xref_for_id(selected_id)
+            c_xref = load_customer_xref_for_id(suffix, selected_id)
             a_xref = pd.DataFrame()
 
             st.divider()
@@ -386,8 +394,8 @@ with tab_er:
 
         with st.container(border=True):
             st.subheader("Customer XREF Table (sample)")
-            if st.button("Load XREF data (slow - uses Cortex AI)", key="load_cust_xref"):
-                cust_xref_df = load_customer_xref()
+            if st.button("Load XREF data", key="load_cust_xref"):
+                cust_xref_df = load_customer_xref(suffix)
                 st.dataframe(cust_xref_df.head(100), hide_index=True, width="stretch")
 
     with er_addr_tab:
@@ -399,8 +407,8 @@ with tab_er:
 
         with st.container(border=True):
             st.subheader("Address XREF Table (sample)")
-            if st.button("Load XREF data (slow - uses Cortex AI)", key="load_addr_xref"):
-                addr_xref_df = load_address_xref()
+            if st.button("Load XREF data", key="load_addr_xref"):
+                addr_xref_df = load_address_xref(suffix)
                 st.dataframe(addr_xref_df.head(100), hide_index=True, width="stretch")
 
         with st.container(border=True):
@@ -417,7 +425,7 @@ with tab_history:
     hist_cust_tab, hist_addr_tab = st.tabs(["Customer History", "Address History"])
 
     with hist_cust_tab:
-        cust_history_df = load_customer_history()
+        cust_history_df = load_customer_history(suffix)
         hist_customer = st.selectbox(
             "Select customer",
             sorted(cust_history_df["CUSTOMER_ID"].unique()),
@@ -434,7 +442,7 @@ with tab_history:
                 st.line_chart(dq_trend, x="VALID_FROM", y="DQ_SCORE")
 
     with hist_addr_tab:
-        addr_history_df = load_address_history()
+        addr_history_df = load_address_history(suffix)
         hist_address = st.selectbox(
             "Select address (by ID)",
             sorted(addr_history_df["ADDRESS_ID"].unique()),
