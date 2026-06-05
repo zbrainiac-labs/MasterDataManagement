@@ -34,6 +34,7 @@ def upsert_source_customer(conn, record: SourceCustomer) -> bool:
 
     Returns True if the row was inserted/updated, False if skipped (out-of-order).
     The WHERE clause ensures older events never overwrite newer state.
+    Uses prepare=True for server-side prepared statement (reused across calls).
     """
     params = {
         "source_system": record.source_system,
@@ -49,5 +50,5 @@ def upsert_source_customer(conn, record: SourceCustomer) -> bool:
         "event_timestamp": record.event_timestamp,
     }
     with conn.cursor() as cur:
-        cur.execute(UPSERT_SQL, params)
+        cur.execute(UPSERT_SQL, params, prepare=True)
         return cur.rowcount > 0

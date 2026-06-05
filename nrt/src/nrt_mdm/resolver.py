@@ -1,57 +1,150 @@
-"""Cluster manager: blocking, candidate lookup, matching, and Union-Find clustering."""
+"""Cluster manager: blocking, candidate lookup, matching, and clustering.
+
+Performance-optimized for 1M+ records:
+- Tiered blocking: email_domain (most precise) -> phone_suffix -> SOUNDEX (least precise)
+- LIMIT 50 per tier to cap candidate set
+- Batch cluster lookups (single WHERE IN query)
+- In-memory cluster cache (populated by consumer)
+"""
 
 from nrt_mdm.matching import compute_match_score, MATCH_THRESHOLD
 from nrt_mdm.models import SourceCustomer
 
 
+# Maximum candidates per blocking tier
+CANDIDATE_LIMIT = 50
+
 # ---------------------------------------------------------------------------
-# Blocking: candidate lookup via indexed columns
+# Tiered blocking queries (ordered by precision)
 # ---------------------------------------------------------------------------
 
-FIND_CANDIDATES_SQL = """
+FIND_BY_EMAIL_DOMAIN_SQL = """
 SELECT source_system, source_key, first_name, last_name,
        canonical_first_name, email, phone,
        block_soundex, block_email_domain, block_phone_suffix,
        event_timestamp
 FROM source_customers
-WHERE (source_system, source_key) != (%(source_system)s, %(source_key)s)
-  AND (
-      (block_soundex = %(block_soundex)s AND %(block_soundex)s IS NOT NULL)
-      OR (block_email_domain = %(block_email_domain)s AND %(block_email_domain)s IS NOT NULL)
-      OR (block_phone_suffix = %(block_phone_suffix)s AND %(block_phone_suffix)s IS NOT NULL)
-  )
+WHERE block_email_domain = %(block_email_domain)s
+  AND (source_system, source_key) != (%(source_system)s, %(source_key)s)
+LIMIT 50
+"""
+
+FIND_BY_PHONE_SUFFIX_SQL = """
+SELECT source_system, source_key, first_name, last_name,
+       canonical_first_name, email, phone,
+       block_soundex, block_email_domain, block_phone_suffix,
+       event_timestamp
+FROM source_customers
+WHERE block_phone_suffix = %(block_phone_suffix)s
+  AND (source_system, source_key) != (%(source_system)s, %(source_key)s)
+LIMIT 50
+"""
+
+FIND_BY_SOUNDEX_SQL = """
+SELECT source_system, source_key, first_name, last_name,
+       canonical_first_name, email, phone,
+       block_soundex, block_email_domain, block_phone_suffix,
+       event_timestamp
+FROM source_customers
+WHERE block_soundex = %(block_soundex)s
+  AND (source_system, source_key) != (%(source_system)s, %(source_key)s)
+LIMIT 50
 """
 
 
+def _rows_to_candidates(rows) -> list[SourceCustomer]:
+    """Convert raw rows to SourceCustomer objects."""
+    return [SourceCustomer(
+        source_system=r[0], source_key=r[1],
+        first_name=r[2], last_name=r[3],
+        canonical_first_name=r[4], email=r[5], phone=r[6],
+        block_soundex=r[7], block_email_domain=r[8],
+        block_phone_suffix=r[9], event_timestamp=r[10],
+    ) for r in rows]
+
+
 def find_candidates(conn, record: SourceCustomer) -> list[SourceCustomer]:
-    """Find potential matches using blocking keys. O(block_size) not O(N)."""
+    """Find potential matches using tiered blocking with LIMIT.
+
+    Strategy: query the most precise block first (email_domain), then
+    phone_suffix, then SOUNDEX. Each tier is limited to 50 results.
+    Deduplicates across tiers by (source_system, source_key).
+    """
+    seen: set[tuple[str, str]] = set()
+    candidates: list[SourceCustomer] = []
     params = {
         "source_system": record.source_system,
         "source_key": record.source_key,
-        "block_soundex": record.block_soundex,
         "block_email_domain": record.block_email_domain,
         "block_phone_suffix": record.block_phone_suffix,
+        "block_soundex": record.block_soundex,
     }
-    with conn.cursor() as cur:
-        cur.execute(FIND_CANDIDATES_SQL, params)
-        rows = cur.fetchall()
 
-    candidates = []
-    for row in rows:
-        candidates.append(SourceCustomer(
-            source_system=row[0],
-            source_key=row[1],
-            first_name=row[2],
-            last_name=row[3],
-            canonical_first_name=row[4],
-            email=row[5],
-            phone=row[6],
-            block_soundex=row[7],
-            block_email_domain=row[8],
-            block_phone_suffix=row[9],
-            event_timestamp=row[10],
-        ))
+    with conn.cursor() as cur:
+        # Tier 1: Email domain (most precise, smallest blocks)
+        if record.block_email_domain:
+            cur.execute(FIND_BY_EMAIL_DOMAIN_SQL, params)
+            for c in _rows_to_candidates(cur.fetchall()):
+                key = (c.source_system, c.source_key)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(c)
+
+        # Tier 2: Phone suffix
+        if record.block_phone_suffix:
+            cur.execute(FIND_BY_PHONE_SUFFIX_SQL, params)
+            for c in _rows_to_candidates(cur.fetchall()):
+                key = (c.source_system, c.source_key)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(c)
+
+        # Tier 3: SOUNDEX (least precise, largest blocks)
+        if record.block_soundex and len(candidates) < CANDIDATE_LIMIT:
+            cur.execute(FIND_BY_SOUNDEX_SQL, params)
+            for c in _rows_to_candidates(cur.fetchall()):
+                key = (c.source_system, c.source_key)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(c)
+                    if len(candidates) >= CANDIDATE_LIMIT * 2:
+                        break  # hard cap at 100 total candidates
+
     return candidates
+
+
+# ---------------------------------------------------------------------------
+# Cluster cache (in-memory, managed by consumer)
+# ---------------------------------------------------------------------------
+
+class ClusterCache:
+    """In-memory cache for (source_system, source_key) -> cluster_id lookups.
+
+    Eliminates repeated SQL queries for cluster assignments.
+    Invalidated on merge operations.
+    """
+
+    def __init__(self):
+        self._cache: dict[tuple[str, str], int] = {}
+
+    def get(self, source_system: str, source_key: str) -> int | None:
+        return self._cache.get((source_system, source_key))
+
+    def put(self, source_system: str, source_key: str, cluster_id: int) -> None:
+        self._cache[(source_system, source_key)] = cluster_id
+
+    def invalidate_cluster(self, old_cluster_id: int, new_cluster_id: int) -> None:
+        """Update all entries pointing to old_cluster_id to new_cluster_id."""
+        for key, cid in list(self._cache.items()):
+            if cid == old_cluster_id:
+                self._cache[key] = new_cluster_id
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+# Global cache instance (used by consumer)
+cluster_cache = ClusterCache()
 
 
 # ---------------------------------------------------------------------------
@@ -63,9 +156,9 @@ SELECT cluster_id FROM customer_clusters
 WHERE source_system = %(source_system)s AND source_key = %(source_key)s
 """
 
-GET_CLUSTER_FOR_RECORD_SQL = """
-SELECT cluster_id FROM customer_clusters
-WHERE source_system = %(source_system)s AND source_key = %(source_key)s
+BATCH_GET_CLUSTERS_SQL = """
+SELECT source_system, source_key, cluster_id FROM customer_clusters
+WHERE (source_system, source_key) = ANY(%(keys)s)
 """
 
 CREATE_CLUSTER_SQL = """
@@ -104,11 +197,55 @@ WHERE customer_id = %(old_id)s
 
 
 def get_cluster_id(conn, source_system: str, source_key: str) -> int | None:
-    """Get the cluster_id for a source record, or None if not clustered yet."""
+    """Get the cluster_id for a source record. Uses cache first, falls back to SQL."""
+    # Check cache
+    cached = cluster_cache.get(source_system, source_key)
+    if cached is not None:
+        return cached
+
+    # SQL fallback
     with conn.cursor() as cur:
         cur.execute(GET_CLUSTER_SQL, {"source_system": source_system, "source_key": source_key})
         row = cur.fetchone()
-        return row[0] if row else None
+        if row:
+            cluster_cache.put(source_system, source_key, row[0])
+            return row[0]
+    return None
+
+
+def get_cluster_ids_batch(conn, keys: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    """Batch lookup cluster_ids. Returns {(ss, sk): cluster_id} for found entries."""
+    if not keys:
+        return {}
+
+    # Check cache first
+    result: dict[tuple[str, str], int] = {}
+    uncached: list[tuple[str, str]] = []
+    for key in keys:
+        cached = cluster_cache.get(key[0], key[1])
+        if cached is not None:
+            result[key] = cached
+        else:
+            uncached.append(key)
+
+    # SQL for uncached
+    if uncached:
+        with conn.cursor() as cur:
+            # Use VALUES list for batch lookup (more portable than ANY with composite)
+            placeholders = ",".join(["(%s, %s)"] * len(uncached))
+            flat_params = [v for k in uncached for v in k]
+            cur.execute(f"""
+                SELECT cc.source_system, cc.source_key, cc.cluster_id
+                FROM customer_clusters cc
+                JOIN (VALUES {placeholders}) AS v(ss, sk)
+                ON cc.source_system = v.ss AND cc.source_key = v.sk
+            """, flat_params)
+            for row in cur.fetchall():
+                key = (row[0], row[1])
+                result[key] = row[2]
+                cluster_cache.put(row[0], row[1], row[2])
+
+    return result
 
 
 def create_new_cluster(conn, source_system: str, source_key: str) -> int:
@@ -116,9 +253,8 @@ def create_new_cluster(conn, source_system: str, source_key: str) -> int:
     with conn.cursor() as cur:
         cur.execute(CREATE_CLUSTER_SQL, {"source_system": source_system, "source_key": source_key})
         cluster_id = cur.fetchone()[0]
-    # Update XREF
-    with conn.cursor() as cur:
         cur.execute(UPSERT_XREF_SQL, {"source_system": source_system, "source_key": source_key, "customer_id": cluster_id})
+    cluster_cache.put(source_system, source_key, cluster_id)
     return cluster_id
 
 
@@ -127,6 +263,7 @@ def assign_to_cluster(conn, source_system: str, source_key: str, cluster_id: int
     with conn.cursor() as cur:
         cur.execute(ASSIGN_TO_CLUSTER_SQL, {"source_system": source_system, "source_key": source_key, "cluster_id": cluster_id})
         cur.execute(UPSERT_XREF_SQL, {"source_system": source_system, "source_key": source_key, "customer_id": cluster_id})
+    cluster_cache.put(source_system, source_key, cluster_id)
 
 
 def merge_clusters(conn, cluster_a: int, cluster_b: int) -> int:
@@ -146,6 +283,8 @@ def merge_clusters(conn, cluster_a: int, cluster_b: int) -> int:
         cur.execute(MERGE_CLUSTERS_SQL, {"target_id": target, "source_id": source})
         cur.execute(UPDATE_XREF_FOR_CLUSTER_SQL, {"new_id": target, "old_id": source})
 
+    # Invalidate cache entries for merged cluster
+    cluster_cache.invalidate_cluster(source, target)
     return target
 
 
@@ -161,13 +300,19 @@ def resolve(conn, record: SourceCustomer) -> tuple[int, bool]:
     """
     candidates = find_candidates(conn, record)
 
-    # Score against all candidates, collect matches
-    matched_clusters: set[int] = set()
-    for candidate in candidates:
-        if compute_match_score(record, candidate) >= MATCH_THRESHOLD:
-            cid = get_cluster_id(conn, candidate.source_system, candidate.source_key)
-            if cid is not None:
-                matched_clusters.add(cid)
+    # Score candidates and collect matching ones
+    matched_candidates = [
+        c for c in candidates
+        if compute_match_score(record, c) >= MATCH_THRESHOLD
+    ]
+
+    # Batch lookup cluster_ids for all matched candidates
+    if matched_candidates:
+        keys = [(c.source_system, c.source_key) for c in matched_candidates]
+        cluster_map = get_cluster_ids_batch(conn, keys)
+        matched_clusters = set(cluster_map.values())
+    else:
+        matched_clusters = set()
 
     # Get current cluster of the incoming record (if it already exists)
     current_cluster = get_cluster_id(conn, record.source_system, record.source_key)

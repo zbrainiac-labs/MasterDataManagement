@@ -1,5 +1,30 @@
 # Snowflake-Native Master Data Management
 
+## Why MDM?
+
+Organizations running multiple systems (CRM, ERP, billing) inevitably end up with the same real-world entity -- a customer, product, or account -- scattered as conflicting records across systems. Without MDM:
+
+- **No single source of truth** -- which system has the "correct" email for customer #4521?
+- **Unknown data quality** -- how many records have invalid phones or duplicate entries?
+- **Invisible history** -- when did this customer's address change, and what was it before?
+
+Master Data Management solves this by **resolving** duplicates across sources, applying **survivorship rules** to pick the best values, computing a **golden record**, and tracking changes over time.
+
+## What is this project?
+
+This repository implements MDM using only Snowflake-native features (batch pipeline) and a lightweight Kafka+Postgres engine (near-real-time pipeline). No commercial MDM platform required.
+
+For a detailed walkthrough of the batch approach, see: [Master Data Management (MDM) with Snowflake Native Features](https://medium.com/@marcel.daeppen_74522/master-data-management-mdm-with-snowflake-native-features-01b27456039f)
+
+Two implementations, same matching logic, same golden record output:
+
+| | Batch (bulk/) | Near-Real-Time (nrt/) |
+|---|---|---|
+| **Engine** | Snowflake Dynamic Tables | Python + Kafka + Postgres |
+| **Latency** | Hourly (DT target_lag) | ~103ms per update |
+| **Scale** | 1,500 records (dev) | Tested at 1M records |
+| **Deployment** | Snowflake DCM | Docker Compose (local) / SPCS (prod) |
+
 ## Repository Structure
 
 ```
@@ -7,7 +32,6 @@ MasterDataManagement/
 ├── bulk/                   Batch MDM on Snowflake (Dynamic Tables, DCM, hourly lag)
 │   ├── sources/            SQL definitions (DTs, views, serving layers)
 │   ├── sqlunit/            SQL unit tests
-│   ├── scripts/            Test data generation
 │   ├── tests/              E2E validation & notebooks
 │   ├── app/                Streamlit dashboard
 │   ├── pre_deploy.sql      DCM pre-deploy hook
@@ -15,394 +39,101 @@ MasterDataManagement/
 ├── nrt/                    Near-Real-Time MDM (Kafka + Postgres, sub-second)
 │   ├── src/nrt_mdm/        Python consumer, matching, survivorship, DQ
 │   ├── schema/             Postgres DDL
-│   ├── tests/              Unit + E2E tests
+│   ├── app/                Streamlit golden record viewer
+│   ├── tests/              Unit + E2E tests + load tests
 │   ├── docker-compose.yml  Local dev stack
 │   └── Dockerfile          MDM engine container
+├── shared/                 Shared between bulk and NRT
+│   └── scripts/            Test data generator (1.5K to 1M records)
 ├── manifest.yml            DCM project manifest (root for tooling compatibility)
 └── README.md               This file
 ```
 
-## Why
+## Testing (NRT Pipeline)
 
-Organizations running multiple systems that keep similar types of data -- such as CRM, ERP, or billing -- face a common problem: the same entity (customer, product, account) exists as separate, conflicting records across systems. There is no single source of truth, data quality is unknown, and historical changes are invisible. Commercial MDM platforms solve this but at significant complexity and cost.
-
-This project proves that **Snowflake alone** delivers core MDM capabilities -- entity resolution, survivorship, data quality scoring, SCD Type 2 history, and a 360 view -- using only native features. The showcase uses **CRM customer data** as the example domain.
-
-## What
-
-The Showcase is a  fully functional MDM pipeline that merges **1,800 customer records and their addresses from 3 CRM systems** into **1,115 golden customer records with 1:1 linked golden addresses**, achieving a 38% merge rate, weighted DQ scoring, and full SCD2 change history for both entities.
-
-### Glossary
-
-| Term                  | Definition                                                                                     |
-|-----------------------|------------------------------------------------------------------------------------------------|
-| **DCDF**              | Data Cloud Deployment Framework -- RAW, INTEGRATION, PRESENTATION, SHARE layers                |
-| **Entity Resolution** | Identifying and linking records referring to the same real-world entity across sources          |
-| **Golden Record**     | The single authoritative version of a master data entity after survivorship rules are applied   |
-| **Survivorship**      | Rules determining which attribute values from source records are selected for the golden record |
-| **DQ**                | Data Quality -- metrics and rules to measure data accuracy and completeness                    |
-
-### Source Systems
-
-| Source | Description       | Trust | Records | Entities          |
-|--------|-------------------|-------|---------|-------------------|
-| CRM_A  | Legacy system     | 1     | 780     | Customer, Address |
-| CRM_B  | Acquired company  | 2     | 520     | Customer, Address |
-| CRM_C  | Call center       | 3     | 500     | Customer, Address |
-
-### Key Metrics (E2E Tested)
-
-| Metric                | Value                    |
-|-----------------------|--------------------------|
-| Source records        | 1,800 (780 + 520 + 500) |
-| Golden records        | 1,115                    |
-| Merged (2+ sources)   | ~300 customers           |
-| Merge rate            | 38%                      |
-| Avg DQ score          | ~95                      |
-| DQ Excellent (90-100) | ~970 records             |
-
-### Scope
-
-**In Scope:** Customer master data, Address master data, entity resolution, survivorship, DQ scoring, Customer 360 view, Streamlit dashboard.
-
-**Out of Scope:**
-
-| ID | Category                  | Excluded                                           | Why                                    |
-|----|---------------------------|----------------------------------------------------|-----------------------------------------|
-| EX-01 | Additional MDM domains    | Product, Account, Organization, Household          | CRM Customer + Address only             |
-| EX-02 | Stewardship UI            | Manual match/merge/unmerge, approval queues         | All logic is batch SQL                  |
-| EX-03 | Integration & APIs        | REST/GraphQL APIs, webhooks, SaaS connectors       | CSV-based ingestion via stages          |
-| EX-04 | Advanced governance       | GDPR/CCPA consent, retention policies               | Tags/masking planned (OP-05)            |
-| EX-05 | Multi-address             | N:M relationships, org hierarchies                  | 1:1 model; N:M planned (OP-07)         |
-| EX-06 | Production observability  | Health dashboards, error queues, SLAs               | DMF monitoring planned (OP-06)          |
-
-### Capabilities & Snowflake Features
-
-| ID | Capability                     | Snowflake Feature                                              | Status   |
-|----|--------------------------------|----------------------------------------------------------------|----------|
-| CAP-01 | Event-driven ingestion         | Stages + Directory Table Streams + Serverless Tasks            | **Done** |
-| CAP-02 | Column harmonization           | Views with INITCAP, LOWER, REGEXP_REPLACE                     | **Done** |
-| CAP-03 | AI-enhanced entity resolution  | CORTEX.COMPLETE (nickname), AI_CLASSIFY (fake detection) — AI pipeline only | **Done** |
-| CAP-04 | Deterministic matching         | Email exact, phone normalized (last 10 digits)                 | **Done** |
-| CAP-05 | Probabilistic matching         | JAROWINKLER_SIMILARITY, SOUNDEX, blocking strategy             | **Done** |
-| CAP-06 | Survivorship rules             | FIRST_VALUE() ordered by completeness, trust, recency          | **Done** |
-| CAP-07 | Data quality scoring           | 13 weighted rules (base 100, error -20, warning -5, bonus +5) | **Done** |
-| CAP-08 | Current golden records         | Dynamic Tables (TARGET_LAG = 1 hour, auto-refresh)             | **Done** |
-| CAP-09 | SCD Type 2 history             | Dynamic Tables (declarative SCD2 via SHA2 + LAG)               | **Done** |
-| CAP-10 | Cross-reference lineage        | Live XREF views (source key <-> master ID)                     | **Done** |
-| CAP-11 | Customer 360 presentation      | Serving views (nested JSON + flat for BI)                      | **Done** |
-| CAP-12 | Interactive dashboard          | Streamlit 5-tab app                                            | **Done** |
-
----
-
-## How
-
-### Naming Convention
-
-```
-[DOMAIN][LAYER]_[TYPE]_[OBJECT]_[OBJECT_NAME]
-```
-
-| Position | Code | Meaning |
-|----------|------|---------|
-| 1-3      | CRM  | Domain |
-| 4        | I / A / S | Layer: Ingest (RAW), Analytical (Integration), Serving |
-| 6+       | RAW, AGG | RAW = raw data, AGG = aggregated/mastered |
-| next     | TB, DT, VW, ST, FF, TS, SM | Object type |
-| last     | name | Descriptive name + source suffix |
-
-**Examples:** `CRMI_RAW_TB_CUSTOMER_A`, `CRMA_AGG_DT_CUSTOMER_AI`, `CRMA_AGG_DT_CUSTOMER_FUZZY`, `CRMS_AGG_VW_CUSTOMER_360_AI`
-
-### Architecture
-
-Two isolated pipelines run in parallel from the same source data:
-
-```
-  CRM_A (CSV)            CRM_B (CSV)            CRM_C (CSV)
-  Trust=1                Trust=2                Trust=3
-      |                      |                      |
-      v                      v                      v
-+------------------------------------------------------------------------+
-|  RAW (MDM_RAW_v001)                                                    |
-|  Stages -> Directory Table Streams -> Serverless Tasks -> COPY INTO    |
-|  6 append-only tables (3 customer + 3 address), ROW_TIMESTAMP=TRUE     |
-+------------------------------------------------------------------------+
-      |
-      v
-+------------------------------------------------------------------------+
-|  INTEGRATION (MDM_AGG_v001)                                            |
-|                                                                        |
-|  VW_CUSTOMER_UNION       Harmonize 3 sources into common schema        |
-|         |                                                              |
-|    +----+----+                                                         |
-|    |         |                                                         |
-|    v         v                                                         |
-|  [AI]      [FUZZY]                                                     |
-|                                                                        |
-|  AI PIPELINE (Cortex-powered):                                         |
-|    DT_CUSTOMER_ENRICHED_AI   Cortex COMPLETE + AI_CLASSIFY             |
-|    DT_CUSTOMER_GROUPS_AI     Entity resolution (blocking + matching)   |
-|    DT_CUSTOMER_GOLDEN_AI     Survivorship + DQ scoring                 |
-|    DT_CUSTOMER_AI            Current golden records                    |
-|    DT_CUSTOMER_HISTORY_AI    SCD2 history                              |
-|    DT_ADDRESSES_*_AI         Full address pipeline (5 DTs)             |
-|                                                                        |
-|  FUZZY PIPELINE (Classical matching, zero AI cost):                    |
-|    DT_CUSTOMER_ENRICHED_FUZZY  INITCAP(first_name), no AI calls        |
-|    DT_CUSTOMER_GROUPS_FUZZY    Entity resolution (same blocking)       |
-|    DT_CUSTOMER_GOLDEN_FUZZY    Survivorship + DQ scoring               |
-|    DT_CUSTOMER_FUZZY           Current golden records                  |
-|    DT_CUSTOMER_HISTORY_FUZZY   SCD2 history                            |
-|    DT_ADDRESSES_*_FUZZY        Full address pipeline (5 DTs)           |
-+------------------------------------------------------------------------+
-      |
-      v
-+------------------------------------------------------------------------+
-|  SERVING (MDM_SRV_v001)                                                |
-|  VW_CUSTOMER_360_AI / VW_CUSTOMER_360_FUZZY         Nested JSON        |
-|  VW_CUSTOMER_360_FLAT_AI / VW_CUSTOMER_360_FLAT_FUZZY   Flat rows      |
-+------------------------------------------------------------------------+
-      |
-      v
-  Streamlit Dashboard (sidebar toggle: AI vs Fuzzy pipeline)
-```
-
-### Pipeline Comparison: AI vs. Fuzzy
-
-Both pipelines process the same 1,500 source records. The AI pipeline uses Cortex AI for nickname resolution and fake name detection; the Fuzzy pipeline uses only classical string matching (JAROWINKLER, SOUNDEX).
-
-| Metric | AI | Fuzzy | Delta |
-|--------|-----|-------|-------|
-| Golden customers | 1,115 | 1,127 | +12 (fewer merges) |
-| Merged (2+ sources) | 272 | 264 | -8 |
-| Merge rate | 25.7% | 24.9% | -0.8pp |
-| Avg Customer DQ score | 95.7 | 95.7 | identical |
-| Avg Address DQ score | 99.7 | 99.7 | identical |
-| DQ Excellent (>=90) | 1,018 | 1,029 | +11 |
-| DQ Good (70-89) | 82 | 83 | +1 |
-| DQ Fair (50-69) | 15 | 15 | 0 |
-| DQ Poor (<50) | 0 | 0 | 0 |
-
-```
-DQ Tier Distribution (customers)
-
-           AI    FUZZY
-Excellent  1018  1029   ████████████████████████████████████████
-Good         82    83   ███
-Fair         15    15   █
-Poor          0     0
-```
-
-**Key Takeaways:**
-- The AI pipeline merges 8 more records (Bill=William, Bob=Robert via Cortex nickname resolution)
-- DQ scores are nearly identical — the FUZZY pipeline never fires the fake-name penalty (-20) since `is_fake_name` is always FALSE
-- The Fuzzy pipeline has **zero Cortex AI cost** at a marginal 0.8pp merge rate trade-off
-- Both pipelines produce 0 Poor-tier records
-
-### Entity Resolution
-
-Two-pass approach: **deterministic** rules for high-confidence matches, then **probabilistic** rules for fuzzy matches. Records are blocked first to reduce pair comparisons.
-
-#### Blocking Strategy
-
-| Block ID | Key                                            | Status       |
-|----------|------------------------------------------------|--------------|
-| BLOCK-01 | `SOUNDEX(last_name)`                           | **Done**     |
-| BLOCK-02 | `LEFT(postal_code, 3)`                         | Deferred     |
-| BLOCK-03 | `SUBSTR(email, POSITION('@' IN email))`        | **Done**     |
-| BLOCK-04 | `RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 4)`| **Done**     |
-
-#### Deterministic Rules
-
-| Rule ID   | Rule             | Logic                                                          | Confidence |
-|-----------|------------------|----------------------------------------------------------------|------------|
-| MATCH-D01 | Email Exact      | `LOWER(TRIM(email_a)) = LOWER(TRIM(email_b))`                 | 100%       |
-| MATCH-D02 | Phone Normalized | Last 10 digits match, length >= 10                             | 95%        |
-| MATCH-D03 | Name + DOB       | `LOWER(last_name)` match AND `dob` match                      | Planned    |
-
-#### Probabilistic Rules
-
-| Rule ID   | Rule               | Logic                                      | Weight |
-|-----------|--------------------|---------------------------------------------|--------|
-| MATCH-P01 | Name Similarity    | `JAROWINKLER_SIMILARITY >= 85`             | 0.30   |
-| MATCH-P02 | Address Similarity | Street JW >= 80 AND postal_code match       | 0.25   |
-| MATCH-P03 | Name Sound         | `SOUNDEX(last_name)` match                                    | 0.20   |
-| MATCH-P04 | Email Domain+Name  | Same domain AND first_name similarity >= 90% | 0.15   |
-| MATCH-P05 | Phone Partial      | Last 7 digits match AND same city            | 0.10   |
-
-#### Cortex AI Enrichment
-
-| Rule ID   | Technique             | Function                                        | Purpose                                       |
-|-----------|-----------------------|-------------------------------------------------|-----------------------------------------------|
-| ENRICH-01 | Nickname resolution   | `CORTEX.COMPLETE('mistral-large2')`             | Bill->William, Bob->Robert, etc.              |
-| ENRICH-02 | Fake name detection   | `AI_CLASSIFY(['real_person_name', 'fake_or_test_name'])` | Flags test/placeholder names (DQ -20) |
-| MATCH-C01 | Canonical exact match | `canonical_first_name_a = canonical_first_name_b` | Score 0.80 using Cortex-resolved names      |
-
-**Threshold:** Combined score >= 0.70 to merge.
-
-```
-match_score = GREATEST(D01, D02, C01) + P01 + P02 + P03 + P04 + P05
-
->= 0.70: Merge    < 0.70: No match
-```
-
-### Building the Golden Record
-
-Each golden record is assembled in four steps from raw source records:
-
-```
-Step 1 — Union & Enrich     All 1,500 source records are unified into a common schema
-                             (VW_CUSTOMER_UNION). Cortex AI resolves nicknames and flags
-                             fake names (DT_CUSTOMER_ENRICHED, materialized).
-
-Step 2 — Group              Entity resolution (blocking → deterministic → probabilistic)
-                             assigns every record a GROUP_ID. Records sharing a GROUP_ID
-                             represent the same real-world entity (DT_CUSTOMER_GROUPS).
-                             Result: 1,115 groups from 1,800 records (38% merge rate).
-
-Step 3 — Survive            Within each GROUP_ID, survivorship selects the best value for
-                             every attribute using FIRST_VALUE() ordered by completeness →
-                             source trust → recency. One row per GROUP_ID emerges as the
-                             golden record (DT_CUSTOMER_GOLDEN → DT_CUSTOMER).
-
-Step 4 — Score              Data quality rules run AFTER survivorship on the golden record.
-                             The DQ score (0-100) measures output quality; it does not
-                             influence which source value wins.
-```
-
-**Concrete example — 3 records, 1 golden:**
-
-| Field        | CRM A (trust 1)       | CRM B (trust 2)       | CRM C (trust 3) | Golden Record winner          |
-|--------------|-----------------------|-----------------------|------------------|-------------------------------|
-| `first_name` | `Bill`                | `William`             | *(null)*         | `William` — most recent + len > 1 |
-| `last_name`  | `Smith`               | `Smith`               | `Smth`           | `Smith` — CRM A trust wins tie   |
-| `email`      | `bill@acme.com`       | *(null)*              | `b@test.xyz`     | `bill@acme.com` — CRM A + valid  |
-| `phone`      | `+11043321819`        | `+110433218`          | *(null)*         | `+11043321819` — longest E.164   |
-| `dq_score`   |                       |                       |                  | 95 — scored on the golden row     |
-
-### Survivorship Rules
-
-For each group of matched records, survivorship determines which source value wins for each attribute. Uses `FIRST_VALUE()` window functions ordered by: (1) completeness (non-null, non-empty), (2) source trust priority, (3) recency (`METADATA$ROW_LAST_COMMIT_TIME`).
-
-| Priority | Source | Trust Level | Description      |
-|----------|--------|-------------|------------------|
-| 1        | CRM A  | High        | Legacy system    |
-| 2        | CRM B  | Medium      | Acquired company |
-| 3        | CRM C  | Low         | Call center      |
-
-| Attribute    | Winning Strategy                                                              | Fallback           |
-|--------------|-------------------------------------------------------------------------------|--------------------|
-| `first_name` | Non-empty (`LENGTH > 1`) → source priority → most recent `row_timestamp`       | Next source        |
-| `last_name`  | Non-empty (`LENGTH > 1`) → source priority → most recent `row_timestamp`       | Next source        |
-| `email`      | Valid format (`LIKE '%@%'`) → source priority → most recent                    | Next source        |
-| `phone`      | Valid length (`>= 7`) → source priority → most recent                          | Next source        |
-
-Address attributes follow the same pattern: street (length >= 5), city (non-null), postal_code (non-null), country (CRM_A priority).
-
-### Data Quality Rules
-
-Base score 100. Error: -20, Warning: -5, Bonus: +5/+10. Clamped 0-100.
-
-| Rule ID | Field       | Rule                     | Severity | Points | Status |
-|---------|-------------|--------------------------|----------|--------|--------|
-| DQ-001  | email       | Valid email format       | Error    | -20    | Done |
-| DQ-002  | email       | Not disposable domain    | Warning  | -5     | Done |
-| DQ-003  | first_name  | Not null, length > 1     | Error    | -20    | Done |
-| DQ-004  | first_name  | No special characters    | Warning  | -5     | Done |
-| DQ-005  | last_name   | Not null, length > 1     | Error    | -20    | Done |
-| DQ-006  | last_name   | No special characters    | Warning  | -5     | Done |
-| DQ-007  | phone       | Valid phone format       | Warning  | -5     | Done |
-| DQ-008  | phone       | Not placeholder          | Error    | -20    | Done |
-| DQ-009  | postal_code | Valid format for country | Warning  | -5     | Planned |
-| DQ-010  | country     | Valid ISO 3166-1 code    | Error    | -20    | Planned |
-| DQ-011  | street      | Minimum length >= 5      | Warning  | -5     | Done |
-| DQ-012  | city        | Not null for addresses   | Error    | -20    | Done |
-| DQ-X03  | first_name, email | Name appears in email | Bonus  | +5    | Done |
-| DQ-X04  | street, postal_code, city | Complete address | Bonus | +10 | Done |
-| DQ-C01  | Customer    | Has contact method       | Error    | -20    | Done |
-| DQ-C02  | Customer    | Has complete name        | Error    | -20    | Done |
-| DQ-AI01 | first_name  | Cortex AI fake name flag | Error    | -20    | Done |
-
-**Tiers:** 90-100 Excellent | 70-89 Good | 50-69 Fair | 0-49 Poor
-
-### SCD Type 2 Design Decision
-
-**All Dynamic Tables.** Since RAW tables are append-only, the full history of golden record versions is always derivable from the source data. SCD2 is computed declaratively:
-
-1. `VW_*_GOLDEN` returns **all versions** per `file_date` (survivorship applied per snapshot)
-2. `DT_*_HISTORY` uses `SHA2` row-hash + `LAG()` to detect changes between consecutive versions
-3. `VALID_FROM` / `VALID_TO` / `IS_VALID` are computed from version boundaries via `LEAD()`
-
-No stored procedures, no tasks, no imperative DML — just Dynamic Tables with `TARGET_LAG = '1 hour'`.
-
-### Object Inventory (68 objects)
-
-| # | Schema | Object | Type | Definition File |
-|---|--------|--------|------|-----------------|
-| 1-5 | -- | Database, Warehouse, 3 Schemas | Infra | `pre_deploy.sql` + `infrastructure.sql` |
-| 6-11 | `MDM_RAW_v001` | 6 Internal Stages (ST_CUSTOMER_A/B/C, ST_ADDRESSES_A/B/C) | Stage | `infrastructure.sql` |
-| 12-17 | `MDM_RAW_v001` | 6 RAW Tables (TB_CUSTOMER_A/B/C, TB_ADDRESSES_A/B/C) | Table | `raw_tables.sql` |
-| 18-21 | `MDM_AGG_v001` | VW_CUSTOMER_UNION, VW_ADDRESSES_UNION + 4 XREF views (AI/FUZZY) | View | `views.sql` |
-| 22-39 | `MDM_AGG_v001` | 18 DTs: 9 AI pipeline + 9 FUZZY pipeline | DT | `analytics.sql` |
-| 40-43 | `MDM_SRV_v001` | VW_CUSTOMER_360_AI/FUZZY, VW_CUSTOMER_360_FLAT_AI/FUZZY | View | `serve.sql` |
-| 44-61 | `MDM_RAW_v001` | 6 FF + 6 SM + 6 TS (file formats, streams, tasks) | Post-deploy | `post_deploy.sql` |
-
-### Repository Structure
-
-```
-MasterDataManagement/
-  manifest.yml                   DCM project manifest (v2, Jinja templated)
-  pre_deploy.sql                 Database + schemas (run before DCM plan)
-  post_deploy.sql                File formats, streams, tasks (run after DCM deploy)
-  upload_data.sh                 Upload test data to stages (all 3 CRM sources)
-  sources/
-    definitions/
-      infrastructure.sql         Warehouse + internal stages (DEFINE)
-      raw_tables.sql             6 RAW tables (DEFINE TABLE)
-      views.sql                  Union views + XREF views (DEFINE VIEW)
-      analytics.sql              9 Dynamic Tables — full pipeline (DEFINE DYNAMIC TABLE)
-      serve.sql                  Customer 360 views (DEFINE VIEW)
-  sqlunit/
-    tests.sqltest                48 automated tests (positive + negative)
-  app/
-    streamlit_app.py             5-tab Streamlit dashboard
-  scripts/
-    generate_test_data.py        Synthetic test data generator (3 CRM sources)
-  tests/
-    test_golden_rules.sql        Survivorship + DQ + SCD2 validation queries
-    mdm_showcase.ipynb           E2E test notebook
-  .github/
-    workflows/
-      update-local-repo.yml      CI/CD: analyze → plan → deploy → test
-```
-
-### Deployment (DCM)
+### Quick Start
 
 ```bash
-# 1. Pre-deploy: database + schemas
-snow sql -f pre_deploy.sql -c <connection>
-
-# 2. DCM analyze + plan + deploy
-snow dcm raw-analyze MDM_DEV.MDM_AGG_001.MDM_PROJECT -c <connection> --target DEV
-snow dcm plan MDM_DEV.MDM_AGG_001.MDM_PROJECT -c <connection> --target DEV
-snow dcm deploy MDM_DEV.MDM_AGG_001.MDM_PROJECT -c <connection> --target DEV
-
-# 3. Post-deploy: file formats, streams, tasks
-snow sql -f post_deploy.sql -c <connection>
-
-# 4. Upload test data
-./upload_data.sh --CONNECTION_NAME=<connection>
-
-# 5. Dashboard
-cd app && streamlit run streamlit_app.py
+cd nrt/tests
+./run_e2e.sh                          # functional test: 1,500 records + single update
 ```
 
----
+### Test Modes
 
-## Open Points
+| Command | What it does |
+|---------|-------------|
+| `./run_e2e.sh` | Load 1,500 records, send 1 update, show BEFORE/AFTER/CDC trace |
+| `./run_e2e.sh --mode continuous --rate 5` | Continuous updates at 5/sec with latency stats |
+| `./run_e2e.sh --scale medium --duration 60` | 100K records + 60s steady-state at 100/sec |
+| `./run_e2e.sh --scale large --duration 300` | 1M records + 5min steady-state (load test) |
 
-| ID    | Title                           | Priority | Description                                                                |
-|-------|---------------------------------|----------|----------------------------------------------------------------------------|
-| OP-05 | Data Governance                 | P3       | PII tags + masking policies. Run `SYSTEM$CLASSIFY` on RAW tables.          |
-| OP-06 | DMF Monitoring                  | P3       | Row counts, NULL rates, DQ distribution on golden record DTs.              |
-| OP-07 | Multiple Addresses per Customer | P4       | Current 1:1 model. Real MDM needs N addresses per customer.                |
+### Unit Tests
+
+```bash
+cd nrt && pytest tests/ -v            # 41 tests: mappers, matching, survivorship, DQ
+```
+
+### Streamlit Viewer
+
+```bash
+docker compose up -d                  # starts all services including Streamlit
+open http://localhost:8501             # browse golden records, XREF, SCD2 history
+```
+
+### Kafka UI
+
+```bash
+open http://localhost:8080             # inspect topics, messages, consumer lag
+```
+
+### Kafka Topics
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `topic.crm.a` | Inbound | CRM A customer events (src_customer_id, first_name, last_name, email, phone) |
+| `topic.crm.b` | Inbound | CRM B customer events (customer_key, name, email_address, mobile) |
+| `topic.crm.c` | Inbound | CRM C customer events (ticket_customer_id, caller_name, callback_email, callback_phone) |
+| `topic.mdm.golden` | Outbound | Golden record CDC events (INSERT/UPDATE with full record + row_hash) |
+| `topic.mdm.xref` | Outbound | XREF assignment events (ASSIGN/REASSIGN source key to customer_id) |
+
+### NRT Pipeline Latency (1M records)
+
+```
+produce to Kafka ─────> consumer polls ─> map ─> UPSERT ─> resolve ─> survivorship ─> DQ ─> SCD2 write ─> done
+       |                                                                                                   |
+       └────────────────────────────────────────── ~103ms ─────────────────────────────────────────────────┘
+```
+
+To consume events live in a terminal:
+```bash
+docker exec mdm-nrt-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic topic.mdm.golden --from-beginning
+```
+
+## Batch Pipeline (bulk/)
+
+The batch pipeline merges **1,800 customer records and their addresses from 3 CRM systems** into **1,115 golden customer records**, achieving a 38% merge rate, weighted DQ scoring, and full SCD2 change history.
+
+- **Engine:** Snowflake Dynamic Tables with DCM deployment
+- **Two variants:** AI pipeline (Cortex-powered nickname resolution) and FUZZY pipeline (classical matching, zero AI cost)
+- **Deployment:** `snow dcm deploy MDM_DEV.MDM_DCM.MDM_PROJECT -c <connection> --target DEV`
+
+For full details (architecture, matching rules, survivorship, DQ scoring), see [MDM_SPEC_Bulk.md](MDM_SPEC_Bulk.md).
+
+## NRT Pipeline (nrt/)
+
+The near-real-time pipeline processes single Kafka events through entity resolution in ~103ms at 1M records.
+
+- **Engine:** Python consumer + Postgres + Kafka
+- **Matching:** 6 rules (email exact, phone normalized, canonical name, Jaro-Winkler, SOUNDEX, email domain + name)
+- **Threshold:** Combined score >= 0.70 to merge
+- **Golden record:** Survivorship (completeness > source priority > recency) + 11 DQ rules + SCD2 history
+- **CDC:** Golden record and XREF changes published to outbound Kafka topics
+- **Deployment:** `docker compose up -d` (local) / SPCS (production)
+
+For full details (requirements, architecture, processing guarantees), see [MDM_SPEC_Near-Real-Time.md](MDM_SPEC_Near-Real-Time.md).
+
+| Source | Description | Trust | Records |
+|--------|-------------|-------|---------|
+| CRM_A | Legacy system | 1 (highest) | 600-400K |
+| CRM_B | Acquired company | 2 | 400-350K |
+| CRM_C | Call center | 3 (lowest) | 500-250K |

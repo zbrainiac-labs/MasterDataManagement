@@ -794,6 +794,40 @@ def generate_daily_updates_addresses(
     return updates
 
 
+# ---------------------------------------------------------------------------
+# Scale configurations for reuse by load tests
+# ---------------------------------------------------------------------------
+
+SCALES = {
+    "small": {"a": 600, "b": 400, "c": 500, "overlap_b": 180, "overlap_ca": 100, "overlap_cb": 50},
+    "medium": {"a": 40_000, "b": 35_000, "c": 25_000, "overlap_b": 12_000, "overlap_ca": 6_000, "overlap_cb": 3_000},
+    "large": {"a": 400_000, "b": 350_000, "c": 250_000, "overlap_b": 120_000, "overlap_ca": 60_000, "overlap_cb": 30_000},
+}
+
+
+def generate_all(scale: str = "small") -> tuple[list, list, list]:
+    """Generate customer data at the given scale without writing CSVs.
+
+    Returns (customers_a, customers_b, customers_c) — lists of Customer objects.
+    Reuses all overlap, DQ violation, and matching logic from the main generator.
+    """
+    cfg = SCALES[scale]
+    customers_a = generate_customers_crm_a(cfg["a"])
+    customers_b = generate_customers_crm_b(
+        count=cfg["b"],
+        crm_a_customers=customers_a,
+        overlap_count=cfg["overlap_b"],
+    )
+    customers_c = generate_customers_crm_c(
+        count=cfg["c"],
+        crm_a_customers=customers_a,
+        crm_b_customers=customers_b,
+        overlap_count_a=cfg["overlap_ca"],
+        overlap_count_b=cfg["overlap_cb"],
+    )
+    return customers_a, customers_b, customers_c
+
+
 def main():
     print("Generating test data for MDM Showcase...")
     

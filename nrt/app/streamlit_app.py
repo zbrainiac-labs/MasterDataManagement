@@ -139,7 +139,7 @@ if query:
         st.warning("No results found.")
     else:
         st.subheader(f"Search Results ({len(results)} matches)")
-        st.dataframe(results, use_container_width=True, hide_index=True)
+        st.dataframe(results, width="stretch", hide_index=True)
 
         # Select a customer to drill into
         selected_id = st.selectbox(
@@ -169,7 +169,7 @@ if query:
             if sources.empty:
                 st.info("No source records in this cluster.")
             else:
-                st.dataframe(sources, use_container_width=True, hide_index=True)
+                st.dataframe(sources, width="stretch", hide_index=True)
 
             # XREF
             st.subheader("Cross-References (XREF)")
@@ -184,7 +184,7 @@ if query:
             if xref.empty:
                 st.info("No XREF entries.")
             else:
-                st.dataframe(xref, use_container_width=True, hide_index=True)
+                st.dataframe(xref, width="stretch", hide_index=True)
 
             # SCD2 History
             st.subheader("SCD2 History")
@@ -192,4 +192,4 @@ if query:
             if history.empty:
                 st.info("No history.")
             else:
-                st.dataframe(history, use_container_width=True, hide_index=True)
+                st.dataframe(history, width="stretch", hide_index=True)

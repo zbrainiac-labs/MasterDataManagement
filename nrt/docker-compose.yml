@@ -13,6 +13,13 @@ services:
       POSTGRES_USER: mdm
       POSTGRES_PASSWORD: mdm
       POSTGRES_DB: mdm
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=64MB
+      -c maintenance_work_mem=256MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
     ports:
       - "5432:5432"
     volumes:
@@ -109,8 +116,6 @@ services:
     environment:
       POSTGRES_DSN: postgresql://mdm:mdm@postgres:5432/mdm
     command: ["streamlit", "run", "app/streamlit_app.py", "--server.headless=true", "--server.address=0.0.0.0"]
-    profiles:
-      - ui
 
 volumes:
   pgdata:

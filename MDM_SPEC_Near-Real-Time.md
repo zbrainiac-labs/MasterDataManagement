@@ -93,11 +93,14 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 
 | ID | Title | Status |
 |----|-------|--------|
-| INF-01 | Kafka Container | Done |
-| INF-02 | Postgres Container / Snowflake Managed Postgres | Done |
-| INF-03 | MDM Engine Container | Done |
+| INF-01 | Kafka Container (local dev/test) | Done |
+| INF-01b | Kafka on Confluent Cloud (production) | Planned |
+| INF-02 | Postgres Container (local dev/test) | Done |
+| INF-02b | Snowflake Managed Postgres (production) | Planned |
+| INF-03 | MDM Engine Container (local dev/test) | Done |
+| INF-03b | MDM Engine on SPCS (production) | Planned |
 | INF-04 | Local Docker Desktop Dev Environment | Done |
-| INF-05 | Throughput Target | Done (~107ms latency) |
+| INF-05 | Throughput Target | Done (~103ms at 1M records) |
 | INF-06 | Snowflake Interactive Table | Planned |
 | INF-07 | Snowflake Table Mirroring (SCD2 + XREF) | Planned |
 
@@ -108,6 +111,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | TST-01 | Synthetic Event Producer (Faker) | Done |
 | TST-02 | E2E Integration Test Script | Done |
 | TST-03 | Streamlit Golden Record Viewer | Done |
+| TST-04 | Production-Scale Load Test (1M customers) | Done (infra ready) |
 
 ---
 
@@ -126,8 +130,8 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 |---------|---------------|-----|-----------|
 | Kafka partitions | 1 | 3 | 3+ |
 | Kafka replication | 1 | 1 | 3 |
-| Postgres | `postgres:16-alpine` container | `postgres:16-alpine` container | Snowflake Managed Postgres |
-| MDM Engine | Docker container | Docker container | SPCS (Snowpark Container Services) |
+| Postgres | `postgres:16-alpine` container | Snowflake Managed Postgres | Snowflake Managed Postgres |
+| MDM Engine | Docker container | SPCS (Snowpark Container Services) | SPCS (Snowpark Container Services) |
 | Consumer instances | 1 | 1 | 1-3 (per partition) |
 | Topic retention | 1 day | 1 day | 7 days |
 
@@ -229,7 +233,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-03: Incremental Resolution
 
-**Status:** Planned
+**Status:** Done (infrastructure ready, pending full 1M validation run)
 
 **What:** On each UPSERT, only the incoming record is resolved against existing candidates -- not a full N x N re-computation. This limits work to O(block_size) comparisons per message, enabling sub-second latency even as the dataset grows.
 
@@ -245,7 +249,17 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-04: Blocking Indexes
 
-**Status:** Planned
+**Status:** Done
+
+**Measured performance (local Docker Desktop, 1M records in Postgres):**
+- Single update end-to-end latency: **~103ms** (Kafka in -> golden updated -> Kafka out)
+- Includes: UPSERT + tiered blocking + matching + survivorship + DQ + SCD2 + CDC publish
+
+**Optimizations applied:**
+- Tiered blocking: email_domain (most precise) -> phone_suffix -> SOUNDEX, each with LIMIT 50
+- In-memory cluster cache (eliminates repeated SQL lookups)
+- Batch cluster ID lookups (single WHERE IN query for all matched candidates)
+- Prepared statements for UPSERT hot path
 
 **What:** Pre-computed blocking keys stored as indexed columns on `source_customers`. Candidate lookup queries these indexes to avoid full table scans. Any record sharing at least one blocking key with the incoming record becomes a candidate for pairwise scoring.
 
@@ -705,6 +719,39 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - Added to Docker Compose as optional service (profile: `ui`)
 
 **Acceptance criteria:** App loads, searching by customer_id shows golden record + source records + history. No authentication required (local dev only).
+
+### TST-04: Production-Scale Load Test (1M customers)
+
+**Status:** Planned
+
+**What:** Validate that the NRT MDM pipeline handles production-scale data volumes: 1 million unique customers across 3 CRM sources, with realistic overlap rates, DQ issues, and update patterns. Measures throughput, latency percentiles, and resource consumption under sustained load.
+
+**How:**
+- Integrated into `e2e_test.py` via `--scale` flag (single entry point):
+  ```bash
+  ./nrt/tests/run_e2e.sh --scale large --duration 300
+  ```
+- `generate_all(scale)` in `shared/scripts/generate_test_data.py` provides scale configs:
+  - `small`: 1,500 records (600/400/500)
+  - `medium`: 100,000 records (40K/35K/25K)
+  - `large`: 1,000,000 records (400K/350K/250K)
+  - Overlap rate: ~30% (same ratios as small, scaled up)
+  - DQ violation rate: ~5%
+- **Fast initial load** — direct Postgres bulk insert + `batch_resolve` (not Kafka replay):
+  - In-memory generation -> bulk INSERT into source_customers -> batch_resolve computes clusters + golden
+  - ~10x faster than Kafka replay for initial bootstrap
+- Test phases:
+  1. **Bulk load:** Generate in-memory, INSERT to Postgres, run batch_resolve
+  2. **Steady-state updates:** Send updates via Kafka at `--rate` (default: 100/sec) for `--duration` seconds
+  3. **Latency measurement:** Per-update latency (produce -> golden hash change in Postgres)
+  4. **Report:** Throughput, golden count, merge rate, p50/p95/p99, Postgres table sizes
+- `docker-compose.loadtest.yml` override tunes Postgres for 1M records (512MB shared_buffers)
+
+**Acceptance criteria:**
+- Bulk load of 1M records completes within 30 minutes
+- Steady-state update latency: p95 < 500ms at 100 updates/sec
+- No OOM kills, no Postgres connection exhaustion
+- Golden record count within expected merge range (700K-750K)
 
 ---
 
