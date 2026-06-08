@@ -64,6 +64,8 @@ cd nrt/tests
 |---------|-------------|
 | `./run_e2e.sh` | Load 1,500 records, send 1 update, show BEFORE/AFTER/CDC trace |
 | `./run_e2e.sh --mode continuous --rate 5` | Continuous updates at 5/sec with latency stats |
+| `./run_e2e.sh --transport rest --mode single` | Single update via REST API (synchronous CDC response) |
+| `./run_e2e.sh --transport both --mode continuous` | Compare Kafka vs REST latency side-by-side |
 | `./run_e2e.sh --scale medium --duration 60` | 100K records + 60s steady-state at 100/sec |
 | `./run_e2e.sh --scale large --duration 300` | 1M records + 5min steady-state (load test) |
 
@@ -96,6 +98,33 @@ open http://localhost:8080             # inspect topics, messages, consumer lag
 | `topic.mdm.golden` | Outbound | Golden record CDC events (INSERT/UPDATE with full record + row_hash) |
 | `topic.mdm.xref` | Outbound | XREF assignment events (ASSIGN/REASSIGN source key to customer_id) |
 
+### REST API (port 8000)
+
+Alternative to Kafka for ingest — synchronous request/response with CDC result:
+
+```bash
+# Ingest an event and get golden record change in response
+curl -X POST http://localhost:8000/api/v1/ingest/crm_a \
+  -H "Content-Type: application/json" \
+  -d '{"src_customer_id": "A001", "first_name": "Bill", "last_name": "Smith", "email": "bill@acme.com", "phone": "+11043321819"}'
+
+# Response (synchronous, ~32ms):
+# {"changed": true, "customer_id": 42, "event_type": "UPDATE", "first_name": "Bill", ...}
+
+# Read endpoints
+curl http://localhost:8000/api/v1/customers/42
+curl http://localhost:8000/api/v1/customers/42/sources
+curl http://localhost:8000/api/v1/customers/42/history
+```
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/ingest/{source}` | POST | Ingest event, return CDC synchronously |
+| `/api/v1/customers/{id}` | GET | Current golden record |
+| `/api/v1/customers/{id}/sources` | GET | Source records in cluster |
+| `/api/v1/customers/{id}/history` | GET | SCD2 history |
+| `/api/v1/health` | GET | Health check |
+
 ### NRT Pipeline Latency (1M records)
 
 ```
@@ -106,12 +135,12 @@ produce to Kafka ─────> consumer polls ─> map ─> UPSERT ─> resol
 
 To consume events live in a terminal:
 ```bash
-docker exec mdm-nrt-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic topic.mdm.golden --from-beginning
+docker exec mdm-nrt-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic topic.mdm.golden
 ```
 
 ## Batch Pipeline (bulk/)
 
-The batch pipeline merges **1,800 customer records and their addresses from 3 CRM systems** into **1,115 golden customer records**, achieving a 38% merge rate, weighted DQ scoring, and full SCD2 change history.
+The batch pipeline merges **1,500 customer records and their addresses from 3 CRM systems** (600+400+500) into **1,115 golden customer records**, achieving a 24% merge rate, weighted DQ scoring, and full SCD2 change history.
 
 - **Engine:** Snowflake Dynamic Tables with DCM deployment
 - **Two variants:** AI pipeline (Cortex-powered nickname resolution) and FUZZY pipeline (classical matching, zero AI cost)

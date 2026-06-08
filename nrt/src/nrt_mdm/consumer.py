@@ -1,25 +1,27 @@
 """Kafka consumer loop: single-message processing orchestration.
 
-Polls one message at a time, maps, UPSERTs, resolves, and publishes.
+Polls one message at a time and delegates to the shared pipeline.
 """
 
 import json
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 
 import psycopg
 from confluent_kafka import Consumer, Producer, KafkaError
 
-from nrt_mdm.dq import compute_dq_score
 from nrt_mdm.mappers import TOPIC_MAPPER
-from nrt_mdm.producer import publish_golden_if_changed, publish_xref_change
-from nrt_mdm.resolver import resolve
-from nrt_mdm.survivorship import compute_golden
-from nrt_mdm.upsert import upsert_source_customer
+from nrt_mdm.pipeline import process_event
 
 logger = logging.getLogger(__name__)
+
+# Map Kafka topic names to source_system keys used by pipeline
+TOPIC_TO_SOURCE = {
+    "topic.crm.a": "crm_a",
+    "topic.crm.b": "crm_b",
+    "topic.crm.c": "crm_c",
+}
 
 
 def _create_consumer() -> Consumer:
@@ -47,11 +49,11 @@ def _get_pg_conn():
 
 
 def process_message(msg, pg_conn, producer) -> None:
-    """Process a single Kafka message through the full MDM pipeline."""
+    """Process a single Kafka message through the shared pipeline."""
     topic = msg.topic()
-    mapper = TOPIC_MAPPER.get(topic)
+    source_system = TOPIC_TO_SOURCE.get(topic)
 
-    if mapper is None:
+    if source_system is None:
         logger.warning("No mapper for topic %s, skipping", topic)
         return
 
@@ -66,38 +68,14 @@ def process_message(msg, pg_conn, producer) -> None:
     ts_type, ts_ms = msg.timestamp()
     event_ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
 
-    # Map to common schema
-    record = mapper(payload, event_ts)
-
-    # UPSERT into source_customers (with out-of-order protection)
-    updated = upsert_source_customer(pg_conn, record)
-
-    if not updated:
-        # Out-of-order message -- older than current state, skip resolution
-        pg_conn.commit()
-        return
-
-    # Resolve: blocking + matching + clustering
-    cluster_id, cluster_changed = resolve(pg_conn, record)
-
-    # Recompute golden record for affected cluster
-    golden = compute_golden(pg_conn, cluster_id)
-    if golden is None:
-        pg_conn.commit()
-        return
-
-    # Compute DQ score
-    golden.dq_score = compute_dq_score(golden)
-
-    # CDC: publish golden if changed (includes SCD2 write)
-    publish_golden_if_changed(producer, pg_conn, golden)
-
-    # Publish XREF change if this is a new assignment
-    if cluster_changed:
-        publish_xref_change(producer, record.source_system, record.source_key, cluster_id)
-
-    # Commit DB transaction
-    pg_conn.commit()
+    # Delegate to shared pipeline
+    process_event(
+        source_system=source_system,
+        payload=payload,
+        event_ts=event_ts,
+        pg_conn=pg_conn,
+        producer=producer,
+    )
 
 
 def run_consumer():

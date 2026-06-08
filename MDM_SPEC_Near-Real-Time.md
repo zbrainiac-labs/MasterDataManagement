@@ -88,6 +88,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | BIZ-11 | SCD2 History | Done |
 | BIZ-12 | XREF Table | Done |
 | BIZ-13 | Address Pipeline | Planned (Phase 2) |
+| BIZ-14 | REST API (inbound + synchronous CDC response) | Done |
 
 ### Infrastructure Requirements (INF)
 
@@ -100,9 +101,12 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | INF-03 | MDM Engine Container (local dev/test) | Done |
 | INF-03b | MDM Engine on SPCS (production) | Planned |
 | INF-04 | Local Docker Desktop Dev Environment | Done |
-| INF-05 | Throughput Target | Done (~103ms at 1M records) |
+| INF-05 | Throughput Target | Done (~100ms at 1M records) |
 | INF-06 | Snowflake Interactive Table | Planned |
 | INF-07 | Snowflake Table Mirroring (SCD2 + XREF) | Planned |
+| INF-08 | HA: Kafka Multi-Broker Cluster | Planned (Phase 2) |
+| INF-09 | HA: Postgres Replication & Failover | Planned (Phase 2) |
+| INF-10 | HA: MDM Engine Multi-Instance (active-active) | Planned (Phase 2) |
 
 ### Testing Requirements (TST)
 
@@ -252,7 +256,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 **Status:** Done
 
 **Measured performance (local Docker Desktop, 1M records in Postgres):**
-- Single update end-to-end latency: **~103ms** (Kafka in -> golden updated -> Kafka out)
+- Single update end-to-end latency: **~100ms** (Kafka in -> golden updated -> Kafka out)
 - Includes: UPSERT + tiered blocking + matching + survivorship + DQ + SCD2 + CDC publish
 
 **Optimizations applied:**
@@ -276,7 +280,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-05: Rule-Based Matching
 
-**Status:** Planned
+**Status:** Done
 
 **What:** Pairwise scoring of the incoming record against each candidate. Uses deterministic rules (high confidence, exact matches) and probabilistic rules (fuzzy string similarity). The final score combines both: `MAX(deterministic) + SUM(probabilistic)`. If the combined score >= 0.70, the records are considered a match. There is **no machine learning model** -- this is a classical approach using the `jellyfish` library for Jaro-Winkler similarity (~1 microsecond per comparison).
 
@@ -299,7 +303,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-06: Transitive Cluster Management
 
-**Status:** Planned
+**Status:** Done
 
 **What:** When record A matches record B, and B already matches C (in an existing cluster), all three must be in the same cluster. This requires transitive closure of match relationships. Uses a Union-Find (disjoint set) data structure for O(1) amortized merge operations.
 
@@ -321,7 +325,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-07: Survivorship Recomputation
 
-**Status:** Planned
+**Status:** Done
 
 **What:** When a cluster changes, recompute the golden record for that cluster only. Survivorship picks the best value per attribute from all source records in the cluster, using a priority ordering: (1) completeness, (2) source trust priority, (3) recency.
 
@@ -339,7 +343,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-08: DQ Scoring
 
-**Status:** Planned
+**Status:** Done
 
 **What:** Apply the same non-AI data quality rules as the batch Snowflake pipeline on the newly computed golden record. AI-based rules (fake name detection) are excluded because sub-second latency leaves no room for model inference. Base score 100, penalties for issues, bonuses for completeness. Clamped 0-100.
 
@@ -364,7 +368,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 ### BIZ-09: Kafka Outbound (CDC)
 
-**Status:** Planned
+**Status:** Done
 
 **What:** After golden record recomputation, compare the SHA2 row hash with the previous version. If changed, publish the new golden record to `topic.mdm.golden`. XREF changes are published to a separate `topic.mdm.xref` topic. Only actual changes trigger a publish.
 
@@ -416,7 +420,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### BIZ-10: Batch Re-Resolution
 
-**Status:** Planned
+**Status:** Done
 
 **What:** On-demand full re-computation of all clusters from scratch. Used for consistency checks, rule change validation, initial bootstrap, or periodic reconciliation.
 
@@ -430,13 +434,13 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
   5. Recompute all golden records with survivorship + DQ (inserts new `is_current = TRUE` rows)
   6. Publish all changes to Kafka outbound
 - Note: SCD2 history is preserved (old rows remain with `is_current = FALSE`). Only cluster assignments and current golden rows are rebuilt.
-- Expected runtime: ~30 seconds for 1,800 records
+- Expected runtime: ~1.6 seconds for 1,500 records (batch_resolve_fast)
 
 **Acceptance criteria:** After batch re-resolution, golden record count and merge rate match the Snowflake FUZZY pipeline within +/- 1%.
 
 ### BIZ-11: SCD2 History
 
-**Status:** Planned
+**Status:** Done
 
 **What:** Golden records maintain full change history with `valid_from`, `valid_to`, `is_current` columns. Each change creates a new row (close previous, insert new). Enables point-in-time queries.
 
@@ -454,7 +458,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### BIZ-12: XREF Table
 
-**Status:** Planned
+**Status:** Done
 
 **What:** Real-time cross-reference mapping every `(source_system, source_key)` pair to its golden `customer_id`. Updated atomically with cluster changes.
 
@@ -468,21 +472,63 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### BIZ-13: Address Pipeline (Phase 2)
 
-**Status:** Planned
+**Status:** Planned (Phase 2) — `source_addresses` schema ready
 
 **What:** Parallel address resolution alongside customer. Source addresses linked to customer clusters. Survivorship picks best address per customer. Address DQ scoring (DQ-011, DQ-012, DQ-X04). Note: address fields are NOT used in customer match scoring in MVP (see Phase 2 deferred rules).
 
 **How:**
-- `source_addresses` table: `(source_system, source_key, source_customer_key, street, city, postal_code, country, event_timestamp)`
-- Linked to customer clusters via: `source_customer_key -> customer_clusters.source_key`
-- On customer cluster change, recompute address golden:
-  1. Find all source addresses for records in the cluster
-  2. Apply address survivorship (completeness, priority, recency)
-  3. Compute address DQ score (base 100, -5 short street, -20 null city, +10 complete)
-  4. UPSERT into `golden_addresses`
-- Publishes address changes to `topic.mdm.golden.addresses`
+- `source_addresses` table DDL created for forward compatibility
+- Full implementation pending:
+  - Linked to customer clusters via: `source_customer_key -> customer_clusters.source_key`
+  - On customer cluster change, recompute address golden:
+    1. Find all source addresses for records in the cluster
+    2. Apply address survivorship (completeness, priority, recency)
+    3. Compute address DQ score (base 100, -5 short street, -20 null city, +10 complete)
+    4. UPSERT into `golden_addresses`
+  - Publishes address changes to `topic.mdm.golden.addresses`
 
 **Acceptance criteria:** At most one current golden address per customer cluster. Customers with at least one source address have exactly one current golden address. Customers without source addresses have no golden address. Address DQ scores are between 0-100.
+
+---
+
+### BIZ-14: REST API (inbound + synchronous CDC response)
+
+**Status:** Done
+
+**What:** A REST API that accepts inbound customer events (same as Kafka topics) and returns the resulting CDC event synchronously in the response. This provides a request/response alternative to Kafka for sources that prefer HTTP. The event is processed through the full MDM pipeline (map -> UPSERT -> resolve -> survivorship -> DQ -> SCD2) and the golden record change (or no-change) is returned in the same HTTP call.
+
+**How:**
+- FastAPI service running alongside the MDM engine
+- Endpoint:
+  - `POST /api/v1/ingest/{source_system}` — accepts a customer event, processes it through the full pipeline, returns the CDC result
+- Request body: same JSON schema as Kafka inbound messages
+  ```json
+  POST /api/v1/ingest/crm_a
+  {"src_customer_id": "A000123", "first_name": "Bill", "last_name": "Smith", "email": "bill@acme.com", "phone": "+11043321819"}
+  ```
+- Response: the CDC event (golden record change) returned synchronously
+  ```json
+  {
+    "customer_id": 42,
+    "event_type": "UPDATE",
+    "first_name": "Bill", "last_name": "Smith",
+    "email": "bill@acme.com", "phone": "+11043321819",
+    "dq_score": 100, "source_count": 3,
+    "row_hash": "abc123...",
+    "previous_hash": "def456...",
+    "changed": true,
+    "latency_ms": 55
+  }
+  ```
+- If the golden record did not change (e.g., out-of-order event or survivorship picked existing value), response includes `"changed": false`
+- The event is ALSO published to Kafka outbound topics (parallel delivery)
+- Internally calls the same `process_message` pipeline functions
+- Additional read endpoints:
+  - `GET /api/v1/customers/{customer_id}` — current golden record
+  - `GET /api/v1/customers/{customer_id}/sources` — source records in cluster
+  - `GET /api/v1/customers/{customer_id}/history` — SCD2 history
+
+**Acceptance criteria:** `POST /api/v1/ingest/crm_a` with a valid payload returns the CDC event in <200ms. The same change is also published to `topic.mdm.golden`.
 
 ---
 
@@ -490,25 +536,25 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### INF-01: Kafka Container
 
-**Status:** Planned
+**Status:** Done
 
 **What:** Kafka runs as a single-node container (KRaft mode, no ZooKeeper) for local dev and CI. Multi-platform image (linux/amd64 + linux/arm64).
 
 **How:**
-- Image: `confluentinc/cp-kafka:7.6` (KRaft mode, single-node)
-- Ports: `9092` (plaintext), `9093` (controller)
+- Image: `apache/kafka:3.7.0` (KRaft mode, single-node)
+- Ports: `9092` (internal plaintext), `9093` (controller), `19092` (external/host access)
 - Environment: `KAFKA_PROCESS_ROLES=broker,controller`, `CLUSTER_ID` auto-generated
 - Topics auto-created on first produce (or via init container)
 - Volume: `/var/lib/kafka/data` for persistence across restarts
 - Platform: `platform: linux/amd64,linux/arm64` in docker-compose
-- Health check: `kafka-topics --bootstrap-server localhost:9092 --list`
+- Health check: `kafka-topics --bootstrap-server localhost:9092 --list` (from inside container)
 - Note: replication-factor=1 locally, =3 in production (see Environment Configuration)
 
 **Acceptance criteria:** `docker compose up kafka` starts and becomes healthy within 30 seconds.
 
 ### INF-02: Postgres Container / Snowflake Managed Postgres
 
-**Status:** Planned
+**Status:** Done (local container)
 
 **What:** Postgres hosts all MDM tables. Container for local/CI, Snowflake Managed Postgres for production (not SPCS). Same schema DDL works in both environments.
 
@@ -524,7 +570,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### INF-03: MDM Engine Container
 
-**Status:** Planned
+**Status:** Done (local container)
 
 **What:** A single Python container runs the entire MDM engine: Kafka consumer, field mapping, resolution, survivorship, DQ, and Kafka producer. All co-located for simplicity and low latency.
 
@@ -542,7 +588,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### INF-04: Local Docker Desktop Dev Environment
 
-**Status:** Planned
+**Status:** Done
 
 **What:** The entire stack runs locally with `docker compose up`. No cloud dependencies for development and testing.
 
@@ -551,15 +597,15 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - Single command: `docker compose up --build`
 - Kafka UI: `provectuslabs/kafka-ui` on port `8080` for topic inspection
 - **Startup seeding:** Test producer replays existing CSV files (1,500 records from batch pipeline) as Kafka events for bootstrap
-- Postgres at `localhost:5432`, Kafka at `localhost:9092`
+- Postgres at `localhost:5432`, Kafka at `localhost:19092` (external port)
 - `.env` file with default local credentials
-- `docker compose --profile test up` runs integration tests
+- `docker compose --profile test up` starts the test producer (seeds 100 events). Full E2E tests run via `./nrt/tests/run_e2e.sh`.
 
 **Acceptance criteria:** `docker compose up` produces golden records queryable in Postgres within 60 seconds of startup.
 
 ### INF-05: Throughput Target
 
-**Status:** Planned
+**Status:** Done (~100ms at 1M records)
 
 **What:** The system must meet different throughput targets depending on deployment configuration.
 
@@ -615,6 +661,59 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - Enables side-by-side comparison: batch vs NRT results
 
 **Acceptance criteria:** After 10 golden record updates, Snowflake history table contains 10 rows with correct `valid_from` ordering.
+
+---
+
+### INF-08: HA: Kafka Multi-Broker Cluster
+
+**Status:** Planned (Phase 2)
+
+**What:** Production Kafka deployment must tolerate broker failures without message loss or pipeline interruption. Applies to both inbound topics (CRM events) and outbound topics (CDC golden/xref).
+
+**How:**
+- Confluent Cloud: multi-AZ cluster with `replication.factor=3` and `min.insync.replicas=2`
+- Topics configured with `acks=all` on producers (MDM engine + REST API)
+- Consumer group rebalancing with `session.timeout.ms=30000` for graceful failover
+- Dead-letter topic (`topic.mdm.dlq`) for poison messages that survive retries
+- Monitoring: under-replicated partitions alert, consumer lag alert
+
+**Acceptance criteria:** Single broker failure causes zero message loss. Consumer group rebalances within 30 seconds. No manual intervention required for single-broker failure.
+
+---
+
+### INF-09: HA: Postgres Replication & Failover
+
+**Status:** Planned (Phase 2)
+
+**What:** Production Postgres (Snowflake Managed Postgres or self-managed) must provide automatic failover with minimal data loss. The MDM engine's state (source_customers, golden records, clusters, XREF) is the system of record and must survive infrastructure failures.
+
+**How:**
+- **Option A — Snowflake Managed Postgres:** Built-in HA with synchronous replication across AZs. Automatic failover with RPO=0 (no data loss). MDM engine reconnects via DNS endpoint.
+- **Option B — Self-managed (e.g., Patroni + etcd):** Streaming replication with synchronous standby. Patroni handles leader election and automatic failover. HAProxy or PgBouncer for connection pooling and routing.
+- Connection string uses a virtual/DNS endpoint that follows the primary
+- MDM engine uses connection retry logic with exponential backoff (already implemented in `psycopg_pool`)
+- WAL archiving to object storage for point-in-time recovery (PITR)
+
+**Acceptance criteria:** Primary failure causes automatic failover within 30 seconds. RPO=0 (synchronous replication). MDM engine reconnects and resumes processing without manual intervention. No duplicate golden records produced during failover.
+
+---
+
+### INF-10: HA: MDM Engine Multi-Instance (active-active)
+
+**Status:** Planned (Phase 2)
+
+**What:** Multiple MDM engine instances process events in parallel for throughput and availability. If one instance fails, remaining instances absorb the load automatically.
+
+**How:**
+- Kafka consumer group with N instances (N ≥ 2). Kafka assigns partitions across instances.
+- Each instance processes a subset of inbound partitions (partition-level parallelism)
+- Cluster-level row locking in Postgres (`SELECT ... FOR UPDATE`) prevents concurrent writes to same golden record
+- REST API: multiple replicas behind a load balancer (stateless — each request self-contained)
+- SPCS deployment: min 2 replicas with health check + auto-restart
+- Graceful shutdown: on SIGTERM, finish current message, commit offset, then exit
+- Cluster cache invalidation: each instance maintains its own cache (eventually consistent via DB state)
+
+**Acceptance criteria:** With 2+ instances running, killing one instance causes no message loss (Kafka rebalances partitions to survivors within 30s). Throughput scales linearly with instance count up to partition count. No duplicate or conflicting golden record writes (Postgres row locking guarantees consistency).
 
 ---
 
@@ -702,7 +801,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### TST-03: Streamlit Golden Record Viewer
 
-**Status:** Planned
+**Status:** Done
 
 **What:** A single-page Streamlit app that connects to the Postgres database and allows browsing/filtering golden records. Useful for manual inspection during development, demos, and debugging.
 
@@ -716,13 +815,13 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
   - **XREF table:** cross-references from `customer_xref` for that cluster
 - Connects directly to Postgres (`localhost:5432`, same DSN as E2E test)
 - Runs locally: `streamlit run nrt/app/streamlit_app.py`
-- Added to Docker Compose as optional service (profile: `ui`)
+- Added to Docker Compose as a default service (starts with `docker compose up -d`)
 
 **Acceptance criteria:** App loads, searching by customer_id shows golden record + source records + history. No authentication required (local dev only).
 
 ### TST-04: Production-Scale Load Test (1M customers)
 
-**Status:** Planned
+**Status:** Done (infrastructure ready)
 
 **What:** Validate that the NRT MDM pipeline handles production-scale data volumes: 1 million unique customers across 3 CRM sources, with realistic overlap rates, DQ issues, and update patterns. Measures throughput, latency percentiles, and resource consumption under sustained load.
 
@@ -745,7 +844,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
   2. **Steady-state updates:** Send updates via Kafka at `--rate` (default: 100/sec) for `--duration` seconds
   3. **Latency measurement:** Per-update latency (produce -> golden hash change in Postgres)
   4. **Report:** Throughput, golden count, merge rate, p50/p95/p99, Postgres table sizes
-- `docker-compose.loadtest.yml` override tunes Postgres for 1M records (512MB shared_buffers)
+- Base `docker-compose.yml` includes production-scale Postgres tuning (`shared_buffers=512MB`, `work_mem=64MB`)
 
 **Acceptance criteria:**
 - Bulk load of 1M records completes within 30 minutes
@@ -812,7 +911,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 |  |                                   v                         |   |
 |  |                          +------------------+               |   |
 |  |                          | DQ Scorer        |               |   |
-|  |                          | (13 rules, 0-100)|               |   |
+|  |                          | (11 rules, 0-100)|               |   |
 |  |                          +--------+---------+               |   |
 |  |                                   |                         |   |
 |  |                                   v                         |   |
@@ -993,7 +1092,10 @@ MasterDataManagement/
     src/
       nrt_mdm/
         __init__.py
+        __main__.py             # Module entry point
         consumer.py             # Kafka consumer loop (single-message)
+        pipeline.py             # Core processing: map -> UPSERT -> resolve -> survive -> DQ -> CDC
+        api.py                  # FastAPI REST endpoints (BIZ-14)
         mappers.py              # CRM_A/B/C field mappers + helpers
         models.py               # SourceCustomer dataclass
         upsert.py               # Postgres UPSERT logic
@@ -1011,5 +1113,7 @@ MasterDataManagement/
       test_mappers.py
       test_matching.py
       test_survivorship.py
-      test_e2e.py
+      test_dq.py
+      e2e_test.py
+      run_e2e.sh
 ```

@@ -15,9 +15,11 @@ Examples:
   ./run_e2e.sh --mode continuous --rate 5          # latency monitoring
   ./run_e2e.sh --scale medium --duration 60        # 100K load + 1 min steady-state
   ./run_e2e.sh --scale large --duration 300        # 1M load + 5 min steady-state
+  ./run_e2e.sh --transport rest --mode single      # test via REST API instead of Kafka
+  ./run_e2e.sh --transport both --mode continuous  # compare Kafka vs REST side-by-side
 
 Prerequisites:
-  docker compose up -d  (postgres + kafka + mdm-engine must be running)
+  docker compose up -d  (postgres + kafka + mdm-engine + mdm-api must be running)
 """
 
 import argparse
@@ -34,6 +36,7 @@ from confluent_kafka import Consumer, Producer, KafkaError
 # Connection defaults match docker-compose.yml
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "postgresql://mdm:mdm@localhost:5432/mdm")
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:19092")
+API_BASE_URL = os.environ.get("MDM_API_URL", "http://localhost:8000")
 GOLDEN_TOPIC = "topic.mdm.golden"
 XREF_TOPIC = "topic.mdm.xref"
 
@@ -312,31 +315,40 @@ def pick_random_source(conn) -> dict | None:
 
 
 def build_update_event(source_rec: dict) -> tuple[str, str, dict]:
-    """Build an update event with a changed email."""
+    """Build an update event with a random field change (email, phone, or name)."""
     ss = source_rec["source_system"]
     key = source_rec["source_key"]
-    new_email = source_rec["email"]
+    new_email = source_rec["email"] or ""
+    new_phone = source_rec["phone"] or ""
+    new_first = source_rec["first_name"] or ""
+    new_last = source_rec["last_name"] or ""
 
-    if new_email and "@" in new_email:
+    change = random.choice(["email", "phone", "name"])
+
+    if change == "email" and "@" in new_email:
         local = new_email.split("@")[0]
         new_email = f"{local}@updated-corp.com"
+    elif change == "phone":
+        new_phone = f"+1{random.randint(200, 999)}{random.randint(1000000, 9999999)}"
+    elif change == "name" and new_first:
+        new_first = new_first + random.choice(["a", "o", "i", "e"])
 
     if ss == "CRM_A":
         return TOPIC_CRM_A, key, {
             "src_customer_id": key,
-            "first_name": source_rec["first_name"] or "",
-            "last_name": source_rec["last_name"] or "",
-            "email": new_email or "",
-            "phone": source_rec["phone"] or "",
+            "first_name": new_first,
+            "last_name": new_last,
+            "email": new_email,
+            "phone": new_phone,
         }
     elif ss == "CRM_B":
-        name = f"{source_rec['first_name'] or ''} {source_rec['last_name'] or ''}".strip()
+        name = f"{new_first} {new_last}".strip()
         return TOPIC_CRM_B, key, {
             "customer_key": key, "name": name,
-            "email_address": new_email or "", "mobile": source_rec["phone"] or "",
+            "email_address": new_email, "mobile": new_phone,
         }
     else:
-        caller = f"{source_rec['first_name'] or ''} {source_rec['last_name'] or ''}".strip()
+        caller = f"{new_first} {new_last}".strip()
         return TOPIC_CRM_C, key, {
             "ticket_customer_id": key, "caller_name": caller,
             "callback_email": new_email or "", "callback_phone": source_rec["phone"] or "",
@@ -366,24 +378,50 @@ def format_golden(g: dict | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# REST API transport
+# ---------------------------------------------------------------------------
+
+# Map source_system to REST API source path
+SOURCE_TO_REST = {"CRM_A": "crm_a", "CRM_B": "crm_b", "CRM_C": "crm_c"}
+
+
+def send_via_rest(source_system: str, payload: dict) -> dict:
+    """Send an event via REST API and return the CDC result."""
+    import httpx
+    source = SOURCE_TO_REST.get(source_system, source_system.lower())
+    url = f"{API_BASE_URL}/api/v1/ingest/{source}"
+    resp = httpx.post(url, json=payload, timeout=30.0)
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
 # Continuous / Timed mode
 # ---------------------------------------------------------------------------
 
-def run_continuous(conn, rate: float = 1.0, duration: int | None = None):
+def run_continuous(conn, rate: float = 1.0, duration: int | None = None, transport: str = "kafka"):
     """Send updates continuously, printing latency for each.
 
     If duration is set, stop after that many seconds and print report.
+    Transport: 'kafka', 'rest', or 'both'.
     """
-    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
+    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP}) if transport in ("kafka", "both") else None
     latencies = []
+    latencies_rest = []
     count = 0
     interval = 1.0 / rate
     start_time = time.time()
 
     mode_label = f"{duration}s timed" if duration else "indefinite (Ctrl+C)"
-    print(f"\n  Continuous mode: {rate} update(s)/sec, {mode_label}")
-    print(f"  {'#':<6} {'Source':<20} {'Cluster':<8} {'Latency':>10} {'p50':>8} {'p95':>8} {'p99':>8}")
-    print(f"  {'-'*6} {'-'*20} {'-'*8} {'-'*10} {'-'*8} {'-'*8} {'-'*8}")
+    transport_label = transport.upper()
+    print(f"\n  Continuous mode: {rate} update(s)/sec, {mode_label}, transport={transport_label}")
+
+    if transport == "both":
+        print(f"  {'#':<6} {'Source':<20} {'Cluster':<8} {'Kafka':>8} {'REST':>8} {'p50K':>7} {'p50R':>7}")
+        print(f"  {'-'*6} {'-'*20} {'-'*8} {'-'*8} {'-'*8} {'-'*7} {'-'*7}")
+    else:
+        print(f"  {'#':<6} {'Source':<20} {'Cluster':<8} {'Latency':>10} {'p50':>8} {'p95':>8} {'p99':>8}")
+        print(f"  {'-'*6} {'-'*20} {'-'*8} {'-'*10} {'-'*8} {'-'*8} {'-'*8}")
 
     try:
         while True:
@@ -399,34 +437,64 @@ def run_continuous(conn, rate: float = 1.0, duration: int | None = None):
             golden_before = get_golden_for_cluster(conn, cluster_id)
 
             topic, key, payload = build_update_event(source_rec)
-            ts_ms = int(time.time() * 1000)
-            producer.produce(topic, key=key, value=json.dumps(payload).encode(), timestamp=ts_ms)
-            producer.flush()
-            produce_time = time.time()
+            source_label = f"{source_rec['source_system']}|{source_rec['source_key']}"
 
-            # Poll until change detected
-            for _ in range(100):  # max 5s
-                time.sleep(0.05)
-                golden_after = get_golden_for_cluster(conn, cluster_id)
-                if golden_after and golden_after.get("row_hash") != (golden_before or {}).get("row_hash"):
-                    break
+            kafka_ms = 0
+            rest_ms = 0
 
-            latency_ms = int((time.time() - produce_time) * 1000)
-            latencies.append(latency_ms)
+            if transport in ("kafka", "both"):
+                ts_ms = int(time.time() * 1000)
+                producer.produce(topic, key=key, value=json.dumps(payload).encode(), timestamp=ts_ms)
+                producer.flush()
+                produce_time = time.time()
+
+                # Poll until change detected
+                for _ in range(100):
+                    time.sleep(0.05)
+                    golden_after = get_golden_for_cluster(conn, cluster_id)
+                    if golden_after and golden_after.get("row_hash") != (golden_before or {}).get("row_hash"):
+                        break
+                kafka_ms = int((time.time() - produce_time) * 1000)
+                latencies.append(kafka_ms)
+
+            if transport in ("rest", "both"):
+                # For 'both' mode, rebuild event (golden already changed from kafka)
+                if transport == "both":
+                    # Pick a new random source for REST test
+                    source_rec2 = pick_random_source(conn)
+                    if source_rec2:
+                        _, _, payload2 = build_update_event(source_rec2)
+                        rest_start = time.time()
+                        result = send_via_rest(source_rec2["source_system"], payload2)
+                        rest_ms = result.get("latency_ms", int((time.time() - rest_start) * 1000))
+                        latencies_rest.append(rest_ms)
+                else:
+                    rest_start = time.time()
+                    result = send_via_rest(source_rec["source_system"], payload)
+                    rest_ms = result.get("latency_ms", int((time.time() - rest_start) * 1000))
+                    latencies.append(rest_ms)
+
             count += 1
 
-            s = sorted(latencies)
-            p50 = s[len(s) // 2]
-            p95 = s[int(len(s) * 0.95)]
-            p99 = s[int(len(s) * 0.99)]
-
-            source_label = f"{source_rec['source_system']}|{source_rec['source_key']}"
-            print(f"  {count:<6} {source_label:<20} {cluster_id:<8} {latency_ms:>7}ms {p50:>5}ms {p95:>5}ms {p99:>5}ms")
+            if transport == "both":
+                sk = sorted(latencies)
+                sr = sorted(latencies_rest) if latencies_rest else [0]
+                p50k = sk[len(sk) // 2]
+                p50r = sr[len(sr) // 2]
+                print(f"  {count:<6} {source_label:<20} {cluster_id:<8} {kafka_ms:>5}ms {rest_ms:>5}ms {p50k:>5}ms {p50r:>5}ms")
+            else:
+                s = sorted(latencies)
+                p50 = s[len(s) // 2]
+                p95 = s[int(len(s) * 0.95)]
+                p99 = s[int(len(s) * 0.99)]
+                lat = kafka_ms if transport == "kafka" else rest_ms
+                print(f"  {count:<6} {source_label:<20} {cluster_id:<8} {lat:>7}ms {p50:>5}ms {p95:>5}ms {p99:>5}ms")
 
             # Throttle
-            elapsed = time.time() - produce_time
-            if elapsed < interval:
-                time.sleep(interval - elapsed)
+            elapsed = time.time() - start_time - (count - 1) * interval
+            remaining = interval - (time.time() - start_time - (count - 1) * interval)
+            if remaining > 0:
+                time.sleep(min(remaining, interval))
 
     except KeyboardInterrupt:
         pass
@@ -499,6 +567,8 @@ def main():
                         help="Updates per second in continuous mode (default: 1.0)")
     parser.add_argument("--duration", type=int, default=300,
                         help="Steady-state duration in seconds for medium/large (default: 300)")
+    parser.add_argument("--transport", choices=["kafka", "rest", "both"], default="kafka",
+                        help="Transport for sending updates: kafka (default), rest, or both (compare)")
     args = parser.parse_args()
 
     # For medium/large scale with no explicit mode override, default to continuous
@@ -557,7 +627,7 @@ def main():
     # =========================================================================
     if args.mode == "continuous":
         duration = args.duration if args.scale != "small" else None
-        latencies = run_continuous(conn, rate=args.rate, duration=duration)
+        latencies = run_continuous(conn, rate=args.rate, duration=duration, transport=args.transport)
 
         # Phase 3: Report for medium/large
         if args.scale in ("medium", "large"):
@@ -596,24 +666,40 @@ def main():
         cdc_consumer.poll(timeout=1.0)
     time.sleep(1)
 
-    # Produce
-    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
-    ts_ms = int(time.time() * 1000)
-    producer.produce(topic, key=key, value=json.dumps(payload).encode(), timestamp=ts_ms)
-    producer.flush()
-    produce_time = time.time()
-    print("\n  Produced 1 update event")
+    # Produce (via Kafka or REST)
+    if args.transport in ("rest", "both"):
+        source = SOURCE_TO_REST.get(source_rec["source_system"], source_rec["source_system"].lower())
+        rest_url = f"{API_BASE_URL}/api/v1/ingest/{source}"
+        # Print curl equivalent
+        payload_json = json.dumps(payload, indent=None)
+        print(f"\n  --- curl ---")
+        print(f"  curl -s -X POST {rest_url} \\")
+        print(f"    -H 'Content-Type: application/json' \\")
+        print(f"    -d '{payload_json}'")
+        print()
+        produce_time = time.time()
+        rest_result = send_via_rest(source_rec["source_system"], payload)
+        latency_ms = rest_result.get("latency_ms", int((time.time() - produce_time) * 1000))
+        print(f"  --- REST CDC Response ({latency_ms}ms) ---")
+        print(f"  {json.dumps(rest_result, indent=2)}")
+    else:
+        producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
+        ts_ms = int(time.time() * 1000)
+        producer.produce(topic, key=key, value=json.dumps(payload).encode(), timestamp=ts_ms)
+        producer.flush()
+        produce_time = time.time()
+        print("\n  Produced 1 update event via Kafka")
 
-    # Poll until change
-    print("  Waiting for processing...", end="", flush=True)
-    golden_after = None
-    for _ in range(50):
-        time.sleep(0.1)
-        golden_after = get_golden_for_cluster(conn, cluster_id)
-        if golden_after and golden_after.get("row_hash") != (golden_before or {}).get("row_hash"):
-            break
-    latency_ms = int((time.time() - produce_time) * 1000)
-    print(f" done ({latency_ms}ms)")
+        # Poll until change
+        print("  Waiting for processing...", end="", flush=True)
+        golden_after = None
+        for _ in range(50):
+            time.sleep(0.1)
+            golden_after = get_golden_for_cluster(conn, cluster_id)
+            if golden_after and golden_after.get("row_hash") != (golden_before or {}).get("row_hash"):
+                break
+        latency_ms = int((time.time() - produce_time) * 1000)
+        print(f" done ({latency_ms}ms)")
 
     golden_after = get_golden_for_cluster(conn, cluster_id)
     print(f"\n  --- Golden Record (AFTER) ---")
@@ -632,35 +718,40 @@ def main():
             print("    (no change in golden attributes)")
 
     # CDC events
-    print(f"\n  --- CDC Kafka Events ---")
-    cdc_events = []
-    first_cdc_time = None
-    deadline = time.time() + 8.0
-    while time.time() < deadline:
-        msg = cdc_consumer.poll(timeout=1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            continue
-        try:
-            evt = json.loads(msg.value())
-            evt["_topic"] = msg.topic()
-            cdc_events.append(evt)
-            if first_cdc_time is None:
-                first_cdc_time = time.time()
-        except (json.JSONDecodeError, TypeError):
-            pass
-    cdc_consumer.close()
-
-    if not cdc_events:
-        print("    (none captured)")
+    if args.transport == "rest":
+        # In REST-only mode, CDC was already returned synchronously above
+        print(f"\n  --- CDC (returned in REST response above) ---")
+        cdc_consumer.close()
     else:
-        e2e_latency_ms = int((first_cdc_time - produce_time) * 1000)
-        print(f"    End-to-end latency (inbound Kafka -> outbound Kafka): {e2e_latency_ms}ms")
-    for evt in cdc_events:
-        t = evt.pop("_topic", "")
-        topic_label = "golden" if t == GOLDEN_TOPIC else "xref"
-        print(f"    [{topic_label}] {json.dumps(evt, indent=None)}")
+        print(f"\n  --- CDC Kafka Events ---")
+        cdc_events = []
+        first_cdc_time = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            msg = cdc_consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                continue
+            try:
+                evt = json.loads(msg.value())
+                evt["_topic"] = msg.topic()
+                cdc_events.append(evt)
+                if first_cdc_time is None:
+                    first_cdc_time = time.time()
+            except (json.JSONDecodeError, TypeError):
+                pass
+        cdc_consumer.close()
+
+        if not cdc_events:
+            print("    (none captured)")
+        else:
+            e2e_latency_ms = int((first_cdc_time - produce_time) * 1000)
+            print(f"    End-to-end latency (inbound Kafka -> outbound Kafka): {e2e_latency_ms}ms")
+        for evt in cdc_events:
+            t = evt.pop("_topic", "")
+            topic_label = "golden" if t == GOLDEN_TOPIC else "xref"
+            print(f"    [{topic_label}] {json.dumps(evt, indent=None)}")
 
     # Validation
     print(f"\n{'=' * 70}")

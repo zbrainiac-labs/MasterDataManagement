@@ -23,7 +23,7 @@ if docker compose -f "$PROJECT_DIR/docker-compose.yml" ps --format '{{.Service}}
     echo "[docker] OK"
 else
     echo "[docker] Starting stack..."
-    docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d postgres kafka mdm-engine
+    docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d
     echo "[docker] Waiting for services to be healthy..."
     sleep 10
     echo "[docker] OK"
@@ -54,6 +54,6 @@ fi
 # --- Run E2E test ---
 echo ""
 echo "TIP: To watch CDC events live in another terminal:"
-echo "  docker exec mdm-nrt-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic topic.mdm.golden --from-beginning"
+echo "  docker exec mdm-nrt-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic topic.mdm.golden"
 echo ""
 python "$SCRIPT_DIR/e2e_test.py" "$@"
