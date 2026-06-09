@@ -8,6 +8,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from nrt_mdm.audit import log_audit, publish_audit_async
 from nrt_mdm.dq import compute_dq_score
 from nrt_mdm.mappers import TOPIC_MAPPER, map_crm_a, map_crm_b, map_crm_c
 from nrt_mdm.producer import publish_golden_if_changed, publish_xref_change, compute_row_hash, GET_CURRENT_GOLDEN_SQL
@@ -67,7 +68,16 @@ def process_event(
     updated = upsert_source_customer(pg_conn, record)
 
     if not updated:
+        audit_rec = log_audit(
+            pg_conn,
+            event_type="INGEST",
+            source_system=record.source_system,
+            source_key=record.source_key,
+            action="SKIPPED",
+            detail={"reason": "out-of-order event"},
+        )
         pg_conn.commit()
+        publish_audit_async(producer, audit_rec)
         return {
             "changed": False,
             "event_type": "SKIPPED",
@@ -115,10 +125,29 @@ def process_event(
     if cluster_changed and producer:
         publish_xref_change(producer, record.source_system, record.source_key, cluster_id)
 
+    latency_ms = int((time.time() - start) * 1000)
+
+    # Audit record (transactional — written before commit)
+    audit_rec = log_audit(
+        pg_conn,
+        event_type="INGEST",
+        source_system=record.source_system,
+        source_key=record.source_key,
+        cluster_id=cluster_id,
+        action=event_type,
+        detail={
+            "previous_hash": previous_hash,
+            "new_hash": new_hash if changed else None,
+            "latency_ms": latency_ms,
+            "cluster_changed": cluster_changed,
+        },
+    )
+
     # Commit DB transaction
     pg_conn.commit()
 
-    latency_ms = int((time.time() - start) * 1000)
+    # Async publish audit to Kafka for Snowflake mirroring
+    publish_audit_async(producer, audit_rec)
 
     return {
         "changed": changed,

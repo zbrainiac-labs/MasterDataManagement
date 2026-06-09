@@ -72,14 +72,15 @@ cd nrt/tests
 ### Unit Tests
 
 ```bash
-cd nrt && pytest tests/ -v            # 41 tests: mappers, matching, survivorship, DQ
+cd nrt && pytest tests/ -v            # 147 tests: mappers, matching, survivorship, DQ, audit, regression, interfaces
 ```
 
-### Streamlit Viewer
+### Streamlit Viewers
 
 ```bash
-docker compose up -d                  # starts all services including Streamlit
-open http://localhost:8501             # browse golden records, XREF, SCD2 history
+docker compose up -d                  # starts all services
+open http://localhost:8501             # golden record viewer (browse records, XREF, SCD2 history)
+open http://localhost:8502             # audit log viewer (SEC-04: live tail of audit events)
 ```
 
 ### Kafka UI
@@ -97,6 +98,7 @@ open http://localhost:8080             # inspect topics, messages, consumer lag
 | `topic.crm.c` | Inbound | CRM C customer events (ticket_customer_id, caller_name, callback_email, callback_phone) |
 | `topic.mdm.golden` | Outbound | Golden record CDC events (INSERT/UPDATE with full record + row_hash) |
 | `topic.mdm.xref` | Outbound | XREF assignment events (ASSIGN/REASSIGN source key to customer_id) |
+| `topic.mdm.audit` | Outbound | Audit events (SEC-04: ingest, changes, reads) for real-time consumers |
 
 ### REST API (port 8000)
 
@@ -130,7 +132,7 @@ curl http://localhost:8000/api/v1/customers/42/history
 ```
 produce to Kafka ─────> consumer polls ─> map ─> UPSERT ─> resolve ─> survivorship ─> DQ ─> SCD2 write ─> done
        |                                                                                                   |
-       └────────────────────────────────────────── ~103ms ─────────────────────────────────────────────────┘
+       └────────────────────────────────────────── ~100ms ─────────────────────────────────────────────────┘
 ```
 
 To consume events live in a terminal:

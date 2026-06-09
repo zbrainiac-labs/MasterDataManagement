@@ -21,6 +21,7 @@ from collections import defaultdict
 import psycopg
 from confluent_kafka import Producer
 
+from nrt_mdm.audit import log_audit
 from nrt_mdm.dq import compute_dq_score
 from nrt_mdm.matching import compute_match_score, MATCH_THRESHOLD
 from nrt_mdm.models import SourceCustomer, GoldenCustomer
@@ -294,10 +295,25 @@ def batch_resolve_fast(reset: bool = False):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), '9999-12-31', TRUE)
             """, batch)
 
+    total_elapsed = time.time() - load_start
+
+    # Audit record for batch operation
+    log_audit(
+        conn,
+        event_type="BATCH_RESOLVE",
+        actor="mdm-engine:batch",
+        action="TRUNCATE_AND_REBUILD",
+        detail={
+            "source_count": n,
+            "cluster_count": num_clusters,
+            "golden_count": golden_count,
+            "duration_seconds": round(total_elapsed, 1),
+        },
+    )
+
     conn.commit()
     conn.close()
 
-    total_elapsed = time.time() - load_start
     logger.info("Golden records: %d (computed in %.1fs)", golden_count, time.time() - golden_start)
     logger.info(
         "Batch re-resolution complete: %d records -> %d clusters -> %d golden records (%.1fs total)",

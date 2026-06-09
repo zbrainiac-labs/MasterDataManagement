@@ -14,8 +14,10 @@ from datetime import datetime, timezone
 
 import psycopg
 from confluent_kafka import Producer
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from nrt_mdm.audit import log_audit
 from nrt_mdm.pipeline import process_event
 
 logger = logging.getLogger(__name__)
@@ -184,3 +186,44 @@ def get_history(customer_id: int):
 def health():
     """Health check."""
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Read-access audit middleware
+# ---------------------------------------------------------------------------
+
+class AuditReadMiddleware(BaseHTTPMiddleware):
+    """Log GET requests to /api/v1/customers/* for audit trail."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if (
+            request.method == "GET"
+            and "/api/v1/customers/" in request.url.path
+            and response.status_code == 200
+        ):
+            # Extract customer_id from path
+            parts = request.url.path.split("/")
+            try:
+                cid_idx = parts.index("customers") + 1
+                cluster_id = int(parts[cid_idx])
+            except (ValueError, IndexError):
+                cluster_id = None
+
+            actor = request.headers.get("X-Actor", "anonymous")
+            try:
+                log_audit(
+                    _pg_conn,
+                    event_type="READ",
+                    actor=actor,
+                    cluster_id=cluster_id,
+                    action="READ",
+                    detail={"path": request.url.path},
+                )
+                _pg_conn.commit()
+            except Exception:
+                _pg_conn.rollback()
+        return response
+
+
+app.add_middleware(AuditReadMiddleware)

@@ -113,12 +113,13 @@ def publish_golden_if_changed(producer, conn, golden: GoldenCustomer) -> bool:
     valid_from = datetime.now(timezone.utc).isoformat()
     event = _golden_to_event(golden, event_type, previous_hash, valid_from)
 
-    producer.produce(
-        GOLDEN_TOPIC,
-        key=str(golden.cluster_id),
-        value=json.dumps(event).encode(),
-    )
-    producer.flush()
+    if producer is not None:
+        producer.produce(
+            GOLDEN_TOPIC,
+            key=str(golden.cluster_id),
+            value=json.dumps(event).encode(),
+        )
+        producer.flush()
 
     logger.info("Published golden %s for cluster_id=%d", event_type, golden.cluster_id)
     return True

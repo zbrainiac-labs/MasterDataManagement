@@ -47,7 +47,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 
 | Term | Definition |
 |------|-----------|
-| `source_key` | Primary key from the originating CRM system (e.g., `src_customer_id` in CRM_A) |
+y| `source_key` | Primary key from the originating CRM system (e.g., `src_customer_id` in CRM_A) |
 | `cluster_id` | Auto-incremented ID grouping matched source records. One cluster = one real-world entity. **Note:** `customer_id` is an alias for `cluster_id` used in outbound events and XREF -- they always hold the same value. Schema uses `cluster_id` internally and `customer_id` in external-facing contracts (outbound Kafka, Snowflake tables, XREF). |
 | `customer_id` | Alias for `cluster_id` in external-facing contexts (outbound events, XREF, Snowflake). Always equals `cluster_id`. |
 | `golden record` | The single current best-version of a cluster, after survivorship rules are applied |
@@ -103,10 +103,37 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | INF-04 | Local Docker Desktop Dev Environment | Done |
 | INF-05 | Throughput Target | Done (~100ms at 1M records) |
 | INF-06 | Snowflake Interactive Table | Planned |
-| INF-07 | Snowflake Table Mirroring (SCD2 + XREF) | Planned |
+| INF-07 | Snowflake Table Mirroring via Managed Postgres (SCD2 + XREF + Audit) | Planned |
 | INF-08 | HA: Kafka Multi-Broker Cluster | Planned (Phase 2) |
 | INF-09 | HA: Postgres Replication & Failover | Planned (Phase 2) |
 | INF-10 | HA: MDM Engine Multi-Instance (active-active) | Planned (Phase 2) |
+
+### Security Requirements (SEC)
+
+| ID | Title | Status |
+|----|-------|--------|
+| SEC-01 | Transport Security (TLS/mTLS) | Planned (Phase 2) |
+| SEC-02 | API Authentication & Authorization (JWT/OAuth2) | Planned (Phase 2) |
+| SEC-03 | Multi-Tenant Data Isolation (RLS) | Planned (Phase 2) |
+| SEC-04 | Audit Logging (Postgres + Snowflake immutable) | Partially Done (Postgres layer) |
+| SEC-05 | Secrets Management (Vault/SPCS Secrets) | Planned (Phase 2) |
+| SEC-06 | Data Encryption at Rest | Planned (Phase 2) |
+
+### Observability Requirements (OBS)
+
+| ID | Title | Status |
+|----|-------|--------|
+| OBS-01 | OpenTelemetry Instrumentation (traces, metrics, logs) | Planned (Phase 2) |
+
+### Deployment & Operations Requirements (DEP)
+
+| ID | Title | Status |
+|----|-------|--------|
+| DEP-01 | CI/CD Pipeline (build, test, deploy) | Planned (Phase 2) |
+| DEP-02 | Container Image Registry & Vulnerability Scanning | Planned (Phase 2) |
+| DEP-03 | Zero-Downtime Deployment (blue/green or rolling) | Planned (Phase 2) |
+| DEP-04 | Rollback Strategy & Canary Releases | Planned (Phase 2) |
+| DEP-05 | Infrastructure-as-Code (reproducible environments) | Planned (Phase 2) |
 
 ### Testing Requirements (TST)
 
@@ -116,15 +143,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | TST-02 | E2E Integration Test Script | Done |
 | TST-03 | Streamlit Golden Record Viewer | Done |
 | TST-04 | Production-Scale Load Test (1M customers) | Done (infra ready) |
-
----
-
-## Snowflake Target Architecture
-
-| Target | Purpose | Data | Latency |
-|--------|---------|------|---------|
-| INF-06: Interactive Table | Current-state serving, low-latency queries | Latest golden record only (1 row per customer) | Sub-second |
-| INF-07: Mirrored Tables | Analytics, BI, reporting, SCD2 history | Full history + XREF + addresses | Near-real-time (seconds) |
+| TST-05 | Full-Path Regression Suite (config-driven) | Done |
 
 ---
 
@@ -642,31 +661,33 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 **Acceptance criteria:** A golden record change in Postgres is queryable in the Interactive Table within 5 seconds.
 
-### INF-07: Snowflake Table Mirroring (SCD2 + XREF)
+### INF-07: Snowflake Table Mirroring (SCD2 + XREF + Audit)
 
 **Status:** Planned
 
-**What:** Mirror full golden record history and XREF into standard Snowflake tables for analytics, BI, and reporting. Complements INF-06 (which only stores current state).
+**What:** Mirror full golden record history, XREF, and audit events into Snowflake tables for analytics, BI, reporting, and compliance. Uses Snowflake Managed Postgres built-in replication (not Kafka-based ingestion). Complements INF-06 (which only stores current state).
 
 **How:**
-- Ingest from `topic.mdm.golden` via Snowpipe Streaming or Kafka Connector
-- Target tables (standard Snowflake, not Interactive):
-  - `CRMA_NRT_TB_CUSTOMER` -- current golden records (MERGE on customer_id)
-  - `CRMA_NRT_TB_CUSTOMER_HISTORY` -- full SCD2 (append-only from outbound events)
-  - `CRMA_NRT_TB_XREF` -- cross-reference (MERGE on source_system + source_key, from `topic.mdm.xref`)
-  - `CRMA_NRT_TB_ADDRESSES` -- current golden addresses **(Phase 2 -- populated when BIZ-13 is implemented)**
-  - `CRMA_NRT_TB_ADDRESSES_HISTORY` -- address SCD2 history **(Phase 2)**
-- Outbound event contract (BIZ-09) includes `valid_from`, `previous_hash` for SCD2 reconstruction
+- **Mechanism:** Snowflake Managed Postgres table mirroring — automatic replication of Postgres tables to Snowflake
+- Postgres tables replicated to Snowflake OLAP tables:
+  - `golden_customers` → `CRMA_NRT_TB_CUSTOMER_HISTORY` (full SCD2 append-only)
+  - `golden_customers WHERE is_current = TRUE` → `CRMA_NRT_TB_CUSTOMER` (current golden, view or filtered mirror)
+  - `customer_xref` → `CRMA_NRT_TB_XREF` (cross-reference)
+  - `audit_events` → `MDM_AUDIT.EVENTS` (immutable audit trail for SEC-04 compliance, 7+ year retention)
+  - `source_addresses` → `CRMA_NRT_TB_ADDRESSES` **(Phase 2 — populated when BIZ-13 is implemented)**
+- Latency: near-real-time (seconds) — Snowflake Managed Postgres replication lag
+- No additional Kafka topics or connectors required — mirroring is native to Snowflake Managed Postgres
+- Snowflake-side `MDM_AUDIT.EVENTS`: NO UPDATE/DELETE grants, Time Travel = 90 days, Fail-safe = 7 days
 - Schema matches batch pipeline DTs for compatibility
 - Enables side-by-side comparison: batch vs NRT results
 
-**Acceptance criteria:** After 10 golden record updates, Snowflake history table contains 10 rows with correct `valid_from` ordering.
+**Acceptance criteria:** After 10 golden record updates in Postgres, Snowflake mirrored table contains the same 10 rows within 5 seconds. Audit events in Snowflake cannot be modified or deleted by any role.
 
 ---
 
 ### INF-08: HA: Kafka Multi-Broker Cluster
 
-**Status:** Planned (Phase 2)
+**Status:** Partially Done (Postgres layer — audit_events table, audit.py module, pipeline integration, REST read middleware, topic.mdm.audit, Streamlit audit viewer port 8502. Snowflake sink via INF-07 Managed Postgres mirroring.)
 
 **What:** Production Kafka deployment must tolerate broker failures without message loss or pipeline interruption. Applies to both inbound topics (CRM events) and outbound topics (CDC golden/xref).
 
@@ -683,7 +704,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### INF-09: HA: Postgres Replication & Failover
 
-**Status:** Planned (Phase 2)
+**Status:** Done (99 tests — contracts + matrix + boundaries + interface tests in `tests/regression/`, 36s)
 
 **What:** Production Postgres (Snowflake Managed Postgres or self-managed) must provide automatic failover with minimal data loss. The MDM engine's state (source_customers, golden records, clusters, XREF) is the system of record and must survive infrastructure failures.
 
@@ -714,6 +735,310 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - Cluster cache invalidation: each instance maintains its own cache (eventually consistent via DB state)
 
 **Acceptance criteria:** With 2+ instances running, killing one instance causes no message loss (Kafka rebalances partitions to survivors within 30s). Throughput scales linearly with instance count up to partition count. No duplicate or conflicting golden record writes (Postgres row locking guarantees consistency).
+
+---
+
+## Security Requirements Detail
+
+### SEC-01: Transport Security (TLS/mTLS)
+
+**Status:** Planned (Phase 2)
+
+**What:** All network connections encrypted in transit. No plaintext protocols in production.
+
+| Connection | Protocol | Mechanism |
+|-----------|----------|-----------|
+| Client -> REST API | HTTPS | TLS 1.3 (cert from internal CA or Let's Encrypt) |
+| Client -> REST API (service-to-service) | mTLS | Client certificate required for machine clients |
+| MDM Engine -> Kafka | SASL_SSL | TLS + SASL/SCRAM-256 or SASL/OAUTHBEARER |
+| MDM Engine -> Postgres | SSL | `sslmode=verify-full`, client cert optional |
+| Kafka inter-broker | TLS | Mutual TLS between brokers |
+
+**How:**
+- FastAPI: uvicorn with `--ssl-keyfile` / `--ssl-certfile` (or terminated at load balancer)
+- Kafka: `security.protocol=SASL_SSL` in consumer/producer config
+- Postgres: `POSTGRES_DSN` includes `?sslmode=verify-full&sslrootcert=/certs/ca.pem`
+- Certificate rotation via automated renewal (cert-manager or SPCS secret rotation)
+
+**Acceptance criteria:** `nmap` scan shows no plaintext ports. Connection without TLS is refused. Certificate rotation causes zero downtime.
+
+---
+
+### SEC-02: API Authentication & Authorization (JWT/OAuth2)
+
+**Status:** Planned (Phase 2)
+
+**What:** Every REST API request must be authenticated (who is calling) and authorized (what they're allowed to do).
+
+**How:**
+- **Primary:** OAuth2 Bearer tokens (JWT) issued by an external IdP (Entra ID / Okta / Snowflake OAuth)
+- **Fallback:** API keys (for legacy integrations, scoped per tenant + role)
+- **Roles:**
+  - `mdm:write` — can POST to `/api/v1/ingest/*`
+  - `mdm:read` — can GET from `/api/v1/customers/*`
+  - `mdm:admin` — can trigger batch re-resolution, view audit logs
+- Token contains: `sub` (service identity), `tenant_id`, `roles[]`, `exp`
+- FastAPI dependency injection: `Depends(verify_token)` on all routes
+- Token validation: signature verification (RS256), expiry check, audience check
+
+**Acceptance criteria:** Request without valid token returns 401. Request with valid token but wrong role returns 403. Expired tokens are rejected. Token claims are logged in audit trail.
+
+---
+
+### SEC-03: Multi-Tenant Data Isolation (RLS)
+
+**Status:** Planned (Phase 2)
+
+**What:** In a shared, multi-tenant MDM deployment, each tenant can only access their own customer data. No cross-tenant data leakage.
+
+**How:**
+- `tenant_id` column added to all tables:
+  - `source_customers`, `customer_clusters`, `golden_customers`, `customer_xref`, `golden_customers` (history)
+- **Postgres Row-Level Security (RLS):**
+  ```sql
+  ALTER TABLE source_customers ENABLE ROW LEVEL SECURITY;
+  CREATE POLICY tenant_isolation ON source_customers
+    USING (tenant_id = current_setting('app.tenant_id'));
+  ```
+- **API layer:** Extract `tenant_id` from JWT claims, set session variable before each query:
+  ```sql
+  SET LOCAL app.tenant_id = 'tenant_abc';
+  ```
+- **Kafka topics:** Tenant-prefixed topics (`topic.{tenant_id}.crm.a`) or single shared topic with tenant header (configurable)
+- **Blocking + Matching:** Only find candidates within same tenant (blocking queries include `AND tenant_id = %s`)
+- **Golden record IDs:** Scoped per tenant (cluster_id unique within tenant, not globally)
+
+**Acceptance criteria:** Tenant A cannot read or modify Tenant B's records via API, Kafka, or direct DB access. RLS is enforced even for connections that bypass the API. Cross-tenant matching never occurs.
+
+---
+
+### SEC-04: Audit Logging (Postgres + Snowflake immutable)
+
+**Status:** Partially Done (Phase 2)
+
+**What:** Immutable record of all data mutations and access for compliance (GDPR, SOX, FINMA). Dual-layer: Postgres for real-time queries, Snowflake for tamper-proof long-term archival.
+
+**What is logged:**
+- Every ingest event (source system, source key, tenant, actor, timestamp)
+- Every golden record change (before hash, after hash, change type, triggering event)
+- Every API read access (who queried which customer_id, when)
+- Admin actions (batch re-resolution, schema changes, user management)
+- Authentication events (login, failed login, token refresh)
+
+**Architecture (dual-layer):**
+
+| Layer | Purpose | Retention | Immutability |
+|-------|---------|-----------|--------------|
+| Postgres `audit_events` | Hot queries, debugging, real-time alerting | 90 days | Append-only (no UPDATE/DELETE grants on role) |
+| Snowflake `MDM_AUDIT.EVENTS` | Compliance, legal hold, long-term analytics | 7+ years | Truly immutable (no DELETE/UPDATE grants + Time Travel + Fail-safe) |
+
+**How:**
+- Postgres table (append-only):
+  ```sql
+  CREATE TABLE audit_events (
+    event_id     UUID DEFAULT gen_random_uuid(),
+    event_type   TEXT NOT NULL,  -- INGEST, GOLDEN_CHANGE, READ, ADMIN, AUTH
+    tenant_id    TEXT NOT NULL,
+    actor        TEXT NOT NULL,  -- service identity or user
+    resource     TEXT,           -- e.g., "customer:12345"
+    action       TEXT,           -- e.g., "UPDATE", "READ", "BATCH_RESOLVE"
+    detail       JSONB,          -- before/after hashes, payload summary
+    created_at   TIMESTAMPTZ DEFAULT now()
+  );
+  REVOKE UPDATE, DELETE ON audit_events FROM mdm_app;
+  ```
+- Snowflake: `audit_events` table mirrored to `MDM_AUDIT.EVENTS` via Snowflake Managed Postgres replication (INF-07). Kafka `topic.mdm.audit` also available for real-time streaming consumers.
+- Write-ahead: audit record written BEFORE the mutation commits (transactional in Postgres)
+- Snowflake table: NO UPDATE/DELETE grants; Time Travel = 90 days; Fail-safe = 7 days
+
+**Acceptance criteria:** No data mutation can occur without a corresponding audit record. Snowflake audit records cannot be modified or deleted by any role. Audit query does not impact pipeline latency (async Kafka publish to Snowflake). Postgres audit pruned after 90 days; Snowflake retains 7+ years.
+
+---
+
+### SEC-05: Secrets Management (Vault/SPCS Secrets)
+
+**Status:** Planned (Phase 2)
+
+**What:** No credentials, API keys, or connection strings stored in code, environment variables (plaintext), or Docker images.
+
+**How:**
+- **SPCS deployment:** Snowflake Secrets (`CREATE SECRET`) injected as environment variables at container start
+- **Non-SPCS:** HashiCorp Vault or AWS Secrets Manager, fetched at startup
+- Secrets include: Postgres DSN, Kafka SASL credentials, JWT signing keys, API keys, TLS certificates
+- **Rotation:** All secrets rotatable without restart (lazy refresh with TTL check)
+- **Never logged:** Secrets redacted from all log output (structured logging with field filtering)
+- **Local dev:** `.env` file (gitignored) with dummy values; Docker Compose uses env_file
+
+**Acceptance criteria:** `git log --all -p` contains zero secrets. Running container has no secrets visible in `/proc/*/environ` (tmpfs mount). Secret rotation causes zero downtime.
+
+---
+
+### SEC-06: Data Encryption at Rest
+
+**Status:** Planned (Phase 2)
+
+**What:** Customer PII is encrypted when stored on disk, both in Postgres and Kafka.
+
+**How:**
+- **Postgres:** Transparent Data Encryption (TDE) at volume level (EBS encryption / Snowflake Managed Postgres built-in)
+- **Kafka:** Topic-level encryption (Confluent Cloud: enabled by default)
+- **Field-level encryption (optional, for highly sensitive fields):**
+  - Encrypt `email`, `phone` with AES-256-GCM before writing to `source_customers`
+  - Decrypt on read within MDM engine only (key from Vault)
+  - Blocking indexes use tokenized/hashed values for matching
+  - Trade-off: field-level encryption adds complexity to blocking queries (need deterministic encryption or encrypted index)
+
+**Acceptance criteria:** Database dump (`pg_dump`) of `source_customers` does not expose plaintext PII (if field-level encryption enabled). Disk-level encryption verified via volume inspection. All Kafka topics encrypted at rest.
+
+---
+
+## Observability Requirements Detail
+
+### OBS-01: OpenTelemetry Instrumentation (traces, metrics, logs)
+
+**Status:** Planned (Phase 2)
+
+**What:** Full observability stack using OpenTelemetry (OTel) for distributed traces, metrics, and structured logs — enabling performance monitoring, alerting, and debugging in production.
+
+**Three pillars:**
+
+| Pillar | What is captured | Export target |
+|--------|-----------------|--------------|
+| **Traces** | End-to-end request lifecycle: ingest -> map -> UPSERT -> resolve -> survivorship -> DQ -> SCD2 -> CDC. Each step is a span with duration + attributes. | OTel Collector -> Snowflake Event Table / Jaeger / Grafana Tempo |
+| **Metrics** | Pipeline latency (p50/p95/p99), throughput (events/sec), golden record count, merge rate, DQ score distribution, Kafka consumer lag, Postgres connection pool utilization, error rate by source system | OTel Collector -> Prometheus / Snowflake |
+| **Logs** | Structured JSON logs with trace_id/span_id correlation, tenant_id, source_system. Replace print-style logging with OTel log bridge. | OTel Collector -> Snowflake Event Table / Loki |
+
+**How:**
+- Python SDK: `opentelemetry-sdk`, `opentelemetry-instrumentation-fastapi`, `opentelemetry-instrumentation-psycopg`
+- Auto-instrumentation for FastAPI (request spans) and psycopg (DB query spans)
+- Manual spans for pipeline steps:
+  ```python
+  with tracer.start_as_current_span("resolve_cluster") as span:
+      span.set_attribute("mdm.tenant_id", tenant_id)
+      span.set_attribute("mdm.source_system", source_system)
+      # ... resolution logic
+  ```
+- Custom metrics:
+  ```python
+  pipeline_latency = meter.create_histogram("mdm.pipeline.latency_ms")
+  events_processed = meter.create_counter("mdm.events.processed")
+  golden_records_total = meter.create_up_down_counter("mdm.golden.total")
+  kafka_consumer_lag = meter.create_observable_gauge("mdm.kafka.consumer_lag")
+  ```
+- **OTel Collector** sidecar in Docker Compose (and SPCS):
+  - Receives OTLP (gRPC :4317 / HTTP :4318)
+  - Exports to: Snowflake Event Table (via Snowpipe Streaming), Prometheus (metrics), Grafana Tempo (traces)
+- **Snowflake Event Table:** Traces and logs land in `MDM_DEV.MDM_OBS.EVENTS` for SQL-based analysis
+- **Correlation:** Every log line includes `trace_id` and `span_id` for jumping from log entry to full trace
+- **Alerting rules (Prometheus):**
+  - `mdm.pipeline.latency_ms` p99 > 500ms
+  - `mdm.events.error_rate` > 1%
+  - `mdm.kafka.consumer_lag` > 1000 messages
+  - Postgres connection pool > 80% utilization
+
+**Acceptance criteria:** Every REST request produces a trace with spans for each pipeline step. Latency histogram is queryable in Prometheus. Logs in Snowflake Event Table have `trace_id` for correlation. Alert fires within 60 seconds of threshold breach.
+
+---
+
+## Deployment & Operations Requirements Detail
+
+### DEP-01: CI/CD Pipeline (build, test, deploy)
+
+**Status:** Planned (Phase 2)
+
+**What:** Automated pipeline from git push to running production containers. Every change is built, tested, and deployed without manual steps.
+
+**How:**
+- **Trigger:** Push to `main` (deploy to staging) or git tag `v*` (deploy to production)
+- **Stages:**
+  1. **Lint + Type Check** — ruff, mypy
+  2. **Unit Tests** — pytest (147 tests, <40s)
+  3. **Build Container Image** — multi-stage Dockerfile, tagged with git SHA + semver
+  4. **Integration Test** — spin up Docker Compose, run `e2e_test.py --mode single --transport both`
+  5. **Push Image** — to Snowflake Image Registry (SPCS) or ECR/GAR
+  6. **Deploy** — `snow app deploy` or Helm chart apply to SPCS/Kubernetes
+  7. **Smoke Test** — health check + single ingest via REST API against deployed environment
+- **Platform:** GitHub Actions (current CI) extended with deploy stages
+- **Environments:** `dev` (auto-deploy on push) -> `staging` (auto-deploy on merge to main) -> `prod` (manual approval gate)
+
+**Acceptance criteria:** Push to main triggers full pipeline within 5 minutes. Failed tests block deployment. Successful deploy verified by automated smoke test.
+
+---
+
+### DEP-02: Container Image Registry & Vulnerability Scanning
+
+**Status:** Planned (Phase 2)
+
+**What:** All container images stored in a secure registry with automated vulnerability scanning before deployment.
+
+**How:**
+- **Registry:** Snowflake Image Repository (for SPCS) or GitHub Container Registry (ghcr.io)
+- **Image tagging:** `mdm-engine:{git-sha}`, `mdm-engine:{semver}`, `mdm-engine:latest`
+- **Scanning:** Trivy or Snyk scan on every image build (block deploy on HIGH/CRITICAL CVEs)
+- **Base image:** `python:3.13-slim` — minimal attack surface, no shell tools in production
+- **SBOM:** Software Bill of Materials generated with each image (Syft/CycloneDX format)
+- **Retention:** Keep last 10 versions per service; prune older images automatically
+
+**Acceptance criteria:** No image with HIGH/CRITICAL vulnerability reaches production. SBOM queryable for audit. Image pull requires authentication (no public access).
+
+---
+
+### DEP-03: Zero-Downtime Deployment (blue/green or rolling)
+
+**Status:** Planned (Phase 2)
+
+**What:** Deploy new versions without interrupting in-flight requests or Kafka message processing.
+
+**How:**
+- **REST API (mdm-api):** Rolling update — new pods start, pass health check, then old pods drain connections (SPCS or Kubernetes rolling strategy)
+- **Kafka Consumer (mdm-engine):** Graceful shutdown — on SIGTERM, finish current message, commit offset, then exit. New version starts and joins consumer group (Kafka rebalances partitions)
+- **Health probes:**
+  - Liveness: `/api/v1/health` returns 200 (process alive)
+  - Readiness: `/api/v1/health?ready=true` returns 200 only when Postgres + Kafka connections established
+- **Connection draining:** Load balancer waits up to 30s for in-flight requests to complete before killing old pods
+- **Database migrations:** Run as a pre-deploy step (forward-compatible schema changes only — add columns, never remove)
+
+**Acceptance criteria:** During deployment, zero 5xx errors returned to clients. Kafka consumer lag does not exceed 30 seconds during rollout. Health endpoints correctly reflect readiness state.
+
+---
+
+### DEP-04: Rollback Strategy & Canary Releases
+
+**Status:** Planned (Phase 2)
+
+**What:** Ability to quickly revert a bad deployment, plus progressive rollout for high-risk changes.
+
+**How:**
+- **Instant rollback:** Redeploy previous image tag (SHA-pinned). Takes <60 seconds via CI or manual `snow app deploy --image mdm-engine:{previous-sha}`
+- **Canary releases (optional):**
+  - Route 5% of traffic to new version via weighted load balancer
+  - Monitor error rate + latency for 10 minutes
+  - If metrics degrade: auto-rollback. If stable: promote to 100%.
+- **Kafka consumer canary:** Assign 1 partition to new version, remaining to old version. Monitor consumer lag and error rate on the canary partition.
+- **Database rollback:** Schema migrations are forward-only. Rollback = deploy previous code (compatible with new schema). For breaking changes: feature flags.
+- **Runbook:** Documented step-by-step rollback procedure for oncall.
+
+**Acceptance criteria:** Rollback to previous version completes in <60 seconds. Canary failure triggers automatic rollback without human intervention. Rollback does not cause duplicate or lost messages.
+
+---
+
+### DEP-05: Infrastructure-as-Code (reproducible environments)
+
+**Status:** Planned (Phase 2)
+
+**What:** All infrastructure (Postgres, Kafka, SPCS services, networking, secrets, integrations) defined in version-controlled code. Any environment can be recreated from scratch.
+
+**How:**
+- **Local:** Docker Compose (already done — `nrt/docker-compose.yml`)
+- **Production (Snowflake):**
+  - `snow` CLI declarative deployments (SPCS services, image repos, compute pools)
+  - Snowflake DCM project for database objects (schemas, tables, grants)
+  - Terraform/Pulumi for cloud-native resources (Confluent Cloud cluster, VPC peering, DNS)
+- **Environment parity:** Same Docker image runs locally and in SPCS. Environment-specific config via secrets + env vars only.
+- **Drift detection:** Scheduled CI job compares declared state vs actual state, alerts on drift.
+- **Disaster recovery:** Full environment rebuild from IaC + latest Postgres backup + Kafka topic replay. Target: RTO < 1 hour.
+
+**Acceptance criteria:** `terraform apply` (or equivalent) creates a fully functional production environment from zero. No manual ClickOps steps required. Drift detected and alerted within 1 hour.
 
 ---
 
@@ -1080,7 +1405,109 @@ faker >= 24.0
 
 ---
 
-## Project Structure
+### TST-05: Full-Path Regression Suite (config-driven)
+
+**Status:** Planned (Phase 2)
+
+**What:** A comprehensive, auto-generated regression test suite that extracts all business logic (mappings, matching rules, DQ rules, survivorship logic) and channel definitions from code/config, then generates test cases covering every possible path through the pipeline.
+
+**Three layers:**
+
+| Layer | What it validates | How it's generated |
+|-------|------------------|--------------------|
+| **Config manifest** | All mappers, rules, channels, thresholds are documented and extractable | Introspect `mappers.py`, `matching.py`, `dq.py`, `config.yaml` at test time |
+| **Contract tests** | Input/output schemas per source system are honored | JSON Schema validation on inbound payloads + CDC output per channel |
+| **Regression matrix** | Every source x field change x outcome combination is covered | Cartesian product of (source systems) x (field mutations) x (expected outcomes) |
+
+**Config manifest extraction:**
+- At test startup, introspect the codebase to build a test manifest:
+  ```yaml
+  sources:
+    - name: CRM_A
+      topic: topic.crm.a
+      rest_path: /api/v1/ingest/crm_a
+      mapper: map_crm_a
+      fields: [src_customer_id, first_name, last_name, email, phone]
+    - name: CRM_B
+      topic: topic.crm.b
+      rest_path: /api/v1/ingest/crm_b
+      mapper: map_crm_b
+      fields: [id, name, email, mobile]
+    - name: CRM_C
+      ...
+  matching_rules:
+    - id: D01
+      weight: 35
+      field: email
+      type: deterministic
+    - id: C01
+      weight: 20
+      fields: [first_name, last_name]
+      type: jaro_winkler
+      threshold: 0.88
+    ...
+  dq_rules:
+    - id: DQ-001
+      field: email
+      check: not_null
+      penalty: -20
+    ...
+  survivorship:
+    strategy: trust_priority_then_recency
+    trust_order: [CRM_A, CRM_B, CRM_C]
+  ```
+- If a new mapper/rule/channel is added to code but not covered by tests, the suite **fails with a coverage gap warning**.
+
+**Contract testing (per channel):**
+- Define JSON Schema for each source system's inbound payload:
+  ```json
+  {
+    "crm_a": {"required": ["src_customer_id", "first_name", "last_name", "email", "phone"]},
+    "crm_b": {"required": ["id", "name", "email"]},
+    "crm_c": {"required": ["ticket_customer_id", "caller_name", "callback_email"]}
+  }
+  ```
+- Define CDC output schema (golden record change event)
+- Validate: (1) every valid inbound payload produces a valid CDC output, (2) invalid payloads are rejected with proper error
+
+**Regression matrix (auto-generated test cases):**
+
+| Dimension | Values | Count |
+|-----------|--------|-------|
+| Source system | CRM_A, CRM_B, CRM_C | 3 |
+| Field mutation | email, phone, name, all_fields, no_change | 5 |
+| Pipeline outcome | NEW_CLUSTER, MERGE, UPDATE, SPLIT, NO_CHANGE | 5 |
+| Transport | Kafka, REST | 2 |
+
+- Total matrix: 3 x 5 x 5 x 2 = **150 test cases** (generated, not hand-written)
+- Each test case:
+  1. Set up precondition (insert specific source records to create known cluster state)
+  2. Send event (via Kafka or REST)
+  3. Assert: golden record matches expected state, CDC event matches expected type
+  4. Assert: DQ score computed correctly for the resulting golden record
+  5. Assert: XREF updated, SCD2 history row created
+
+**Outcome definitions:**
+- `NEW_CLUSTER` — record doesn't match any existing, creates new golden
+- `MERGE` — record matches an existing cluster, gets absorbed (source_count increases)
+- `UPDATE` — record updates an existing source in its cluster, golden recomputed
+- `SPLIT` — (future) record un-matches after data correction, cluster splits
+- `NO_CHANGE` — event processed but survivorship produces same golden (hash unchanged)
+
+**Implementation:**
+- `nrt/tests/test_regression.py` — pytest-parametrize over the matrix
+- `nrt/tests/contracts/` — JSON Schema files per source system
+- `nrt/tests/conftest.py` — shared fixtures for Postgres setup, channel routing
+- Runs in CI on every PR (subset: small scale) and nightly (full matrix)
+
+**Acceptance criteria:** 
+- Adding a new source system without adding corresponding contract + test cases causes CI failure.
+- Adding a new matching rule without regression coverage causes CI failure.
+- All 150 matrix cells pass. 
+- Zero false positives (tests are deterministic, no timing dependencies).
+- Full suite runs in <5 minutes on CI.
+
+---
 
 ```
 MasterDataManagement/
@@ -1096,6 +1523,7 @@ MasterDataManagement/
         consumer.py             # Kafka consumer loop (single-message)
         pipeline.py             # Core processing: map -> UPSERT -> resolve -> survive -> DQ -> CDC
         api.py                  # FastAPI REST endpoints (BIZ-14)
+        audit.py                # Audit event logging (SEC-04)
         mappers.py              # CRM_A/B/C field mappers + helpers
         models.py               # SourceCustomer dataclass
         upsert.py               # Postgres UPSERT logic
@@ -1106,14 +1534,27 @@ MasterDataManagement/
         producer.py             # Kafka outbound producer
         batch_resolve.py        # Full re-resolution CLI
         test_producer.py        # Faker-based event generator
+    app/
+      streamlit_app.py          # Golden record viewer (port 8501)
+      audit_viewer.py           # Audit log viewer (port 8502)
     schema/
       001_source_tables.sql
       002_golden_tables.sql
+      003_audit_tables.sql
     tests/
       test_mappers.py
       test_matching.py
       test_survivorship.py
       test_dq.py
+      test_audit.py
       e2e_test.py
       run_e2e.sh
+      regression/               # TST-05: Full-path regression suite (99 tests)
+        manifest.py
+        contracts.py
+        conftest.py
+        test_contracts.py
+        test_matrix.py
+        test_boundaries.py
+        test_interfaces.py
 ```

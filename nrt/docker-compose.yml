@@ -135,5 +135,19 @@ services:
       POSTGRES_DSN: postgresql://mdm:mdm@postgres:5432/mdm
     command: ["streamlit", "run", "app/streamlit_app.py", "--server.headless=true", "--server.address=0.0.0.0"]
 
+  # --------------------------------------------------------------------------
+  # Streamlit Audit Log Viewer (SEC-04)
+  # --------------------------------------------------------------------------
+  audit-viewer:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8502:8501"
+    environment:
+      POSTGRES_DSN: postgresql://mdm:mdm@postgres:5432/mdm
+    command: ["streamlit", "run", "app/audit_viewer.py", "--server.headless=true", "--server.address=0.0.0.0", "--server.port=8501"]
+
 volumes:
   pgdata:
