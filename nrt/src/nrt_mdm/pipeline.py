@@ -32,6 +32,7 @@ def process_event(
     event_ts: datetime,
     pg_conn,
     producer=None,
+    actor: str = "mdm-engine:kafka",
 ) -> dict:
     """Process a single event through the full MDM pipeline.
 
@@ -71,6 +72,7 @@ def process_event(
         audit_rec = log_audit(
             pg_conn,
             event_type="INGEST",
+            actor=actor,
             source_system=record.source_system,
             source_key=record.source_key,
             action="SKIPPED",
@@ -131,6 +133,7 @@ def process_event(
     audit_rec = log_audit(
         pg_conn,
         event_type="INGEST",
+        actor=actor,
         source_system=record.source_system,
         source_key=record.source_key,
         cluster_id=cluster_id,

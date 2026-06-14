@@ -84,6 +84,7 @@ def ingest(source_system: str, payload: dict):
             event_ts=event_ts,
             pg_conn=_pg_conn,
             producer=_producer,
+            actor=f"rest:{source_system.lower()}",
         )
     except Exception as e:
         _pg_conn.rollback()
@@ -189,6 +190,50 @@ def health():
 
 
 # ---------------------------------------------------------------------------
+# Admin endpoints (BIZ-15)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/admin/unmatch")
+def admin_unmatch(request: dict):
+    """Split records out of a cluster (BIZ-15: Cluster Split / Unmatch).
+
+    Request body:
+    {
+        "cluster_id": 42,
+        "source_records_to_split": [{"source_system": "CRM_B", "source_key": "B456"}],
+        "reason": "False positive: father/son share phone number"
+    }
+    """
+    from nrt_mdm.unmatch import unmatch_records
+
+    cluster_id = request.get("cluster_id")
+    records_to_split = request.get("source_records_to_split", [])
+    reason = request.get("reason", "")
+
+    if not cluster_id or not records_to_split or not reason:
+        raise HTTPException(status_code=400, detail="Required: cluster_id, source_records_to_split, reason")
+
+    try:
+        result = unmatch_records(
+            pg_conn=_pg_conn,
+            producer=_producer,
+            cluster_id=cluster_id,
+            records_to_split=records_to_split,
+            reason=reason,
+            actor="admin",
+        )
+    except ValueError as e:
+        _pg_conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _pg_conn.rollback()
+        logger.exception("Error in unmatch")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Read-access audit middleware
 # ---------------------------------------------------------------------------
 
@@ -210,7 +255,7 @@ class AuditReadMiddleware(BaseHTTPMiddleware):
             except (ValueError, IndexError):
                 cluster_id = None
 
-            actor = request.headers.get("X-Actor", "anonymous")
+            actor = "rest:read"
             try:
                 log_audit(
                     _pg_conn,

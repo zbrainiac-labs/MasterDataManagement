@@ -11,3 +11,4 @@ app/.streamlit/secrets.toml
 bulk/app/.streamlit/secrets.toml
 .streamlit/secrets.toml
 .snowflake/
+PRODUCTION_SIZING.md

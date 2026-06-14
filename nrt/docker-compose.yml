@@ -8,7 +8,7 @@ services:
   # Infrastructure
   # --------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     environment:
       POSTGRES_USER: mdm
       POSTGRES_PASSWORD: mdm
@@ -69,6 +69,11 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_GROUP_ID: nrt-mdm-consumer
       POSTGRES_DSN: postgresql://mdm:mdm@postgres:5432/mdm
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import nrt_mdm; print(\"ok\")' || exit 0"]
       interval: 30s
@@ -90,22 +95,13 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       POSTGRES_DSN: postgresql://mdm:mdm@postgres:5432/mdm
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     command: ["uvicorn", "nrt_mdm.api:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
-
-  # --------------------------------------------------------------------------
-  # Test Producer (for generating test events)
-  # --------------------------------------------------------------------------
-  test-producer:
-    build: .
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    command: ["python", "-m", "nrt_mdm.test_producer", "--mode", "seed", "--records", "100"]
-    profiles:
-      - test
 
   # --------------------------------------------------------------------------
   # Kafka UI (topic inspection)
@@ -133,6 +129,7 @@ services:
       - "8501:8501"
     environment:
       POSTGRES_DSN: postgresql://mdm:mdm@postgres:5432/mdm
+      MDM_API_URL: http://mdm-api:8000
     command: ["streamlit", "run", "app/streamlit_app.py", "--server.headless=true", "--server.address=0.0.0.0"]
 
   # --------------------------------------------------------------------------

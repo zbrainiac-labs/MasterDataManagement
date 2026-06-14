@@ -2,13 +2,18 @@
 
 ## Marcel Däppen | Principal Solutions Engineer | Snowflake | EMEA Growth Markets
 
-Version 2026-06-03
+Version 2026-06-12
 
 ## Context
 
 The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design replicates the fuzzy matching, survivorship, and DQ logic in Postgres for sub-second golden record updates, with Kafka as the event bus using **single-message processing** (one record processed at a time, with cluster-local recomputation and conditional golden publish).
 
-### Source Field Mappings (from views.sql)
+### Architectural overview
+
+![Architectural overview](./images/nrt-architecture-overview.png)
+
+
+### Source Field Mappings
 
 | CRM_A raw fields | CRM_B raw fields | CRM_C raw fields |
 |---|---|---|
@@ -47,7 +52,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 
 | Term | Definition |
 |------|-----------|
-y| `source_key` | Primary key from the originating CRM system (e.g., `src_customer_id` in CRM_A) |
+| `source_key` | Primary key from the originating CRM system (e.g., `src_customer_id` in CRM_A) |
 | `cluster_id` | Auto-incremented ID grouping matched source records. One cluster = one real-world entity. **Note:** `customer_id` is an alias for `cluster_id` used in outbound events and XREF -- they always hold the same value. Schema uses `cluster_id` internally and `customer_id` in external-facing contracts (outbound Kafka, Snowflake tables, XREF). |
 | `customer_id` | Alias for `cluster_id` in external-facing contexts (outbound events, XREF, Snowflake). Always equals `cluster_id`. |
 | `golden record` | The single current best-version of a cluster, after survivorship rules are applied |
@@ -89,6 +94,7 @@ y| `source_key` | Primary key from the originating CRM system (e.g., `src_custom
 | BIZ-12 | XREF Table | Done |
 | BIZ-13 | Address Pipeline | Planned (Phase 2) |
 | BIZ-14 | REST API (inbound + synchronous CDC response) | Done |
+| BIZ-15 | Cluster Split / Unmatch (fix-forward with CDC) | Done |
 
 ### Infrastructure Requirements (INF)
 
@@ -274,16 +280,6 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 **Status:** Done
 
-**Measured performance (local Docker Desktop, 1M records in Postgres):**
-- Single update end-to-end latency: **~100ms** (Kafka in -> golden updated -> Kafka out)
-- Includes: UPSERT + tiered blocking + matching + survivorship + DQ + SCD2 + CDC publish
-
-**Optimizations applied:**
-- Tiered blocking: email_domain (most precise) -> phone_suffix -> SOUNDEX, each with LIMIT 50
-- In-memory cluster cache (eliminates repeated SQL lookups)
-- Batch cluster ID lookups (single WHERE IN query for all matched candidates)
-- Prepared statements for UPSERT hot path
-
 **What:** Pre-computed blocking keys stored as indexed columns on `source_customers`. Candidate lookup queries these indexes to avoid full table scans. Any record sharing at least one blocking key with the incoming record becomes a candidate for pairwise scoring.
 
 **How:**
@@ -422,8 +418,6 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 **Acceptance criteria:** An unchanged golden record (same attributes after re-survivorship) produces NO outbound message.
 
-**Note:** This event contract (BIZ-09) is the **canonical source of truth** for all downstream Snowflake ingestion (INF-06 Interactive Table, INF-07 Mirrored Tables). Downstream consumers reconstruct SCD2 history from the `valid_from` and `previous_hash` fields in this contract.
-
 **XREF outbound event contract** (`topic.mdm.xref`):
 ```json
 {
@@ -435,7 +429,8 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
   "published_at": "2026-06-04T10:32:15.123Z"
 }
 ```
-INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.mdm.xref` to keep XREF tables current.
+
+**Acceptance criteria:** XREF events published on cluster membership changes. Golden and XREF contracts are consumed by INF-06/INF-07 for Snowflake mirroring.
 
 ### BIZ-10: Batch Re-Resolution
 
@@ -551,6 +546,89 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ---
 
+### BIZ-15: Cluster Split / Unmatch (fix-forward with CDC)
+
+**Status:** Done
+
+**What:** A procedure to correct false-positive matches by splitting a cluster — removing one or more source records from a cluster they should not belong to, creating a new cluster for the unmatched records, recomputing golden records for both clusters, and publishing CDC events so all downstream systems reflect the correction.
+
+**Why:** Matching is probabilistic. When the system incorrectly merges two distinct individuals into one cluster (e.g., father and son with same phone), a data steward must be able to reverse this without full re-resolution.
+
+**How:**
+
+1. **Trigger:** Admin API call or Streamlit UI action:
+   ```
+   POST /api/v1/admin/unmatch
+   {
+     "cluster_id": 42,
+     "source_records_to_split": [
+       {"source_system": "CRM_B", "source_key": "B00456"}
+     ],
+     "reason": "False positive: father/son share phone number"
+   }
+   ```
+
+2. **Split procedure (single transaction):**
+   - Validate: records exist in specified cluster
+   - Create new cluster_id (from sequence) for the split-out records
+   - UPDATE `customer_clusters` — reassign split records to new cluster
+   - UPDATE `customer_xref` — update customer_id for split records
+   - Recompute golden record for **original cluster** (fewer sources now)
+   - Compute golden record for **new cluster** (the split-out records)
+   - Compute DQ scores for both
+   - SCD2 close + insert for both golden records
+   - Commit
+
+3. **CDC fix-forward (published after commit):**
+   - `topic.mdm.golden`: UPDATE event for original cluster (changed source_count, possibly changed fields)
+   - `topic.mdm.golden`: INSERT event for new cluster (new golden record)
+   - `topic.mdm.xref`: REASSIGN events for each split record (old_customer_id → new_customer_id)
+   - `topic.mdm.audit`: ADMIN event with full details (who, what, why, before/after)
+
+4. **Block future re-merge:**
+   - Store a "suppression" record: `(source_system_a, source_key_a, source_system_b, source_key_b)` — these two records must never be placed in the same cluster again
+   - Resolver checks suppressions before merging: if a candidate pair is suppressed, skip the match even if score > threshold
+   - Suppression table: `match_suppressions (id, source_system_a, source_key_a, source_system_b, source_key_b, reason, created_by, created_at)`
+
+5. **Downstream impact:**
+   - All consumers of `topic.mdm.golden` receive the correction via standard CDC
+   - No special "unmatch" event type needed — just UPDATE + INSERT on golden topic
+   - XREF REASSIGN events let consumers update their foreign keys
+   - Snowflake mirrored tables auto-correct via Managed Postgres replication
+
+**Example scenario:**
+```
+Before:  cluster=42 has [CRM_A|A001, CRM_B|B456, CRM_C|C789] → golden: "John Smith"
+Action:  unmatch CRM_B|B456 from cluster 42
+After:   cluster=42 has [CRM_A|A001, CRM_C|C789] → golden: "John Smith" (source_count=2)
+         cluster=900001 has [CRM_B|B456] → golden: "John Smith Jr" (source_count=1)
+CDC:     golden UPDATE cluster=42 (source_count 3→2)
+         golden INSERT cluster=900001 (new golden record)
+         xref REASSIGN CRM_B|B456 (customer_id 42→900001)
+```
+
+**Acceptance criteria:**
+- After unmatch, the two clusters are independent — future events for the split records do not re-merge (suppression enforced)
+- Both golden records are recomputed with correct survivorship
+- CDC events published for both clusters (downstream systems converge to correct state)
+- SCD2 history preserved (old golden row closed, new row opened for both clusters)
+- Audit trail records: who performed the unmatch, which records, reason, before/after state
+- Suppression survives batch re-resolution (re-resolve respects suppressions)
+
+**Admin UI integration (Streamlit):**
+- Integrated into the golden record viewer (port 8501) as an "Admin" page
+- Workflow:
+  1. Data steward searches for a customer (by ID or name)
+  2. Views source records in the cluster — identifies the wrongly merged record
+  3. Selects source record(s) to split out
+  4. Enters reason (free text, required)
+  5. Clicks "Unmatch" — triggers `POST /api/v1/admin/unmatch`
+  6. UI shows confirmation: new cluster ID, updated golden records for both, CDC events published
+- Access: requires `mdm:admin` role (SEC-02). Button hidden for `mdm:read` users.
+- Suppression history viewable in audit viewer (port 8502) filtered by `event_type=ADMIN`
+
+---
+
 ## Infrastructure Requirements Detail
 
 ### INF-01: Kafka Container
@@ -594,7 +672,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 **What:** A single Python container runs the entire MDM engine: Kafka consumer, field mapping, resolution, survivorship, DQ, and Kafka producer. All co-located for simplicity and low latency.
 
 **How:**
-- Base image: `python:3.12-slim` (multi-arch)
+- Base image: `python:3.13-slim` (multi-arch)
 - Dependencies: `confluent-kafka`, `psycopg[binary]`, `jellyfish`
 - Entrypoint: `python -m nrt_mdm.consumer`
 - Environment: `KAFKA_BOOTSTRAP_SERVERS`, `POSTGRES_DSN`, `KAFKA_GROUP_ID`
@@ -687,7 +765,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### INF-08: HA: Kafka Multi-Broker Cluster
 
-**Status:** Partially Done (Postgres layer — audit_events table, audit.py module, pipeline integration, REST read middleware, topic.mdm.audit, Streamlit audit viewer port 8502. Snowflake sink via INF-07 Managed Postgres mirroring.)
+**Status:** Planned (Phase 2)
 
 **What:** Production Kafka deployment must tolerate broker failures without message loss or pipeline interruption. Applies to both inbound topics (CRM events) and outbound topics (CDC golden/xref).
 
@@ -704,13 +782,12 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 
 ### INF-09: HA: Postgres Replication & Failover
 
-**Status:** Done (99 tests — contracts + matrix + boundaries + interface tests in `tests/regression/`, 36s)
+**Status:** Planned (Phase 2)
 
 **What:** Production Postgres (Snowflake Managed Postgres or self-managed) must provide automatic failover with minimal data loss. The MDM engine's state (source_customers, golden records, clusters, XREF) is the system of record and must survive infrastructure failures.
 
 **How:**
-- **Option A — Snowflake Managed Postgres:** Built-in HA with synchronous replication across AZs. Automatic failover with RPO=0 (no data loss). MDM engine reconnects via DNS endpoint.
-- **Option B — Self-managed (e.g., Patroni + etcd):** Streaming replication with synchronous standby. Patroni handles leader election and automatic failover. HAProxy or PgBouncer for connection pooling and routing.
+- **Snowflake Managed Postgres:** Built-in HA with synchronous replication across AZs. Automatic failover with RPO=0 (no data loss). MDM engine reconnects via DNS endpoint.
 - Connection string uses a virtual/DNS endpoint that follows the primary
 - MDM engine uses connection retry logic with exponential backoff (already implemented in `psycopg_pool`)
 - WAL archiving to object storage for point-in-time recovery (PITR)
@@ -808,13 +885,25 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - **Blocking + Matching:** Only find candidates within same tenant (blocking queries include `AND tenant_id = %s`)
 - **Golden record IDs:** Scoped per tenant (cluster_id unique within tenant, not globally)
 
-**Acceptance criteria:** Tenant A cannot read or modify Tenant B's records via API, Kafka, or direct DB access. RLS is enforced even for connections that bypass the API. Cross-tenant matching never occurs.
+**Multi-tenant CDC event delivery (two options, both supported in parallel):**
+
+| Option | CDC Event Content | Consumer Pattern | Trade-off |
+|--------|------------------|-----------------|-----------|
+| **A: Full payload** | Golden record fields embedded in Kafka message (current behavior, scoped to tenant topic) | Consumer processes event directly. No callback needed. | Simpler consumer. Risk: PII on Kafka topic (mitigated by topic-level ACLs per tenant). |
+| **B: Trigger + lookup** | CDC event contains only `{tenant_id, customer_id, event_type, timestamp}` — no PII | Consumer receives trigger, then calls `GET /api/v1/customers/{id}` (authenticated, tenant-scoped) to fetch details. | No PII on Kafka. Consumer needs HTTPS access to API. Slightly higher latency. |
+
+- Both options can run in parallel (same pipeline publishes to both topic patterns)
+- Configuration per tenant: `cdc_mode: "full" | "trigger"` in tenant config
+- Trigger-mode topic: `topic.{tenant_id}.mdm.trigger` (lightweight, no PII)
+- Full-mode topic: `topic.{tenant_id}.mdm.golden` (same as current, with tenant_id field added)
+
+**Acceptance criteria:** Tenant A cannot read or modify Tenant B's records via API, Kafka, or direct DB access. RLS is enforced even for connections that bypass the API. Cross-tenant matching never occurs. Trigger-mode consumers can only GET records for their own tenant.
 
 ---
 
 ### SEC-04: Audit Logging (Postgres + Snowflake immutable)
 
-**Status:** Partially Done (Phase 2)
+**Status:** Partially Done (Postgres layer — audit_events table, audit.py, pipeline integration, REST middleware, topic.mdm.audit, Streamlit viewer. Snowflake immutable sink pending INF-07.)
 
 **What:** Immutable record of all data mutations and access for compliance (GDPR, SOX, FINMA). Dual-layer: Postgres for real-time queries, Snowflake for tamper-proof long-term archival.
 
@@ -952,7 +1041,7 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - **Trigger:** Push to `main` (deploy to staging) or git tag `v*` (deploy to production)
 - **Stages:**
   1. **Lint + Type Check** — ruff, mypy
-  2. **Unit Tests** — pytest (147 tests, <40s)
+  2. **Unit Tests** — pytest (154 tests, <40s)
   3. **Build Container Image** — multi-stage Dockerfile, tagged with git SHA + semver
   4. **Integration Test** — spin up Docker Compose, run `e2e_test.py --mode single --transport both`
   5. **Push Image** — to Snowflake Image Registry (SPCS) or ECR/GAR
@@ -1176,6 +1265,24 @@ INF-07 (Snowflake Mirroring) consumes from both `topic.mdm.golden` and `topic.md
 - Steady-state update latency: p95 < 500ms at 100 updates/sec
 - No OOM kills, no Postgres connection exhaustion
 - Golden record count within expected merge range (700K-750K)
+
+### TST-05: Full-Path Regression Suite (config-driven)
+
+**Status:** Done (106 tests in `tests/regression/` — contracts, matrix, boundaries, interfaces, unmatch)
+
+**What:** A comprehensive regression test suite that extracts business logic from code, validates schemas per source system, and tests every combination of source x field mutation x pipeline outcome.
+
+**How:**
+- `tests/regression/manifest.py` — auto-introspects mappers, rules, survivorship from code; fails if code adds untested logic
+- `tests/regression/contracts.py` — JSON Schemas for inbound (per CRM) and CDC output
+- `tests/regression/test_contracts.py` — schema validation + pipeline contract tests (19 tests)
+- `tests/regression/test_matrix.py` — parametrized: source x mutation x outcome (42 tests)
+- `tests/regression/test_boundaries.py` — unicode, SQL injection, extreme lengths, nulls, phone/email variants (25 tests)
+- `tests/regression/test_interfaces.py` — REST API + Kafka transport end-to-end (13 tests)
+- Runs against real Postgres (Docker container), calls `process_event()` directly for matrix/boundary tests
+- Interface tests require full Docker stack (Kafka + API + engine)
+
+**Acceptance criteria:** Adding a new mapper/rule without test coverage fails CI. All 106 tests pass in <40s. Zero false positives.
 
 ---
 
@@ -1405,109 +1512,7 @@ faker >= 24.0
 
 ---
 
-### TST-05: Full-Path Regression Suite (config-driven)
-
-**Status:** Planned (Phase 2)
-
-**What:** A comprehensive, auto-generated regression test suite that extracts all business logic (mappings, matching rules, DQ rules, survivorship logic) and channel definitions from code/config, then generates test cases covering every possible path through the pipeline.
-
-**Three layers:**
-
-| Layer | What it validates | How it's generated |
-|-------|------------------|--------------------|
-| **Config manifest** | All mappers, rules, channels, thresholds are documented and extractable | Introspect `mappers.py`, `matching.py`, `dq.py`, `config.yaml` at test time |
-| **Contract tests** | Input/output schemas per source system are honored | JSON Schema validation on inbound payloads + CDC output per channel |
-| **Regression matrix** | Every source x field change x outcome combination is covered | Cartesian product of (source systems) x (field mutations) x (expected outcomes) |
-
-**Config manifest extraction:**
-- At test startup, introspect the codebase to build a test manifest:
-  ```yaml
-  sources:
-    - name: CRM_A
-      topic: topic.crm.a
-      rest_path: /api/v1/ingest/crm_a
-      mapper: map_crm_a
-      fields: [src_customer_id, first_name, last_name, email, phone]
-    - name: CRM_B
-      topic: topic.crm.b
-      rest_path: /api/v1/ingest/crm_b
-      mapper: map_crm_b
-      fields: [id, name, email, mobile]
-    - name: CRM_C
-      ...
-  matching_rules:
-    - id: D01
-      weight: 35
-      field: email
-      type: deterministic
-    - id: C01
-      weight: 20
-      fields: [first_name, last_name]
-      type: jaro_winkler
-      threshold: 0.88
-    ...
-  dq_rules:
-    - id: DQ-001
-      field: email
-      check: not_null
-      penalty: -20
-    ...
-  survivorship:
-    strategy: trust_priority_then_recency
-    trust_order: [CRM_A, CRM_B, CRM_C]
-  ```
-- If a new mapper/rule/channel is added to code but not covered by tests, the suite **fails with a coverage gap warning**.
-
-**Contract testing (per channel):**
-- Define JSON Schema for each source system's inbound payload:
-  ```json
-  {
-    "crm_a": {"required": ["src_customer_id", "first_name", "last_name", "email", "phone"]},
-    "crm_b": {"required": ["id", "name", "email"]},
-    "crm_c": {"required": ["ticket_customer_id", "caller_name", "callback_email"]}
-  }
-  ```
-- Define CDC output schema (golden record change event)
-- Validate: (1) every valid inbound payload produces a valid CDC output, (2) invalid payloads are rejected with proper error
-
-**Regression matrix (auto-generated test cases):**
-
-| Dimension | Values | Count |
-|-----------|--------|-------|
-| Source system | CRM_A, CRM_B, CRM_C | 3 |
-| Field mutation | email, phone, name, all_fields, no_change | 5 |
-| Pipeline outcome | NEW_CLUSTER, MERGE, UPDATE, SPLIT, NO_CHANGE | 5 |
-| Transport | Kafka, REST | 2 |
-
-- Total matrix: 3 x 5 x 5 x 2 = **150 test cases** (generated, not hand-written)
-- Each test case:
-  1. Set up precondition (insert specific source records to create known cluster state)
-  2. Send event (via Kafka or REST)
-  3. Assert: golden record matches expected state, CDC event matches expected type
-  4. Assert: DQ score computed correctly for the resulting golden record
-  5. Assert: XREF updated, SCD2 history row created
-
-**Outcome definitions:**
-- `NEW_CLUSTER` — record doesn't match any existing, creates new golden
-- `MERGE` — record matches an existing cluster, gets absorbed (source_count increases)
-- `UPDATE` — record updates an existing source in its cluster, golden recomputed
-- `SPLIT` — (future) record un-matches after data correction, cluster splits
-- `NO_CHANGE` — event processed but survivorship produces same golden (hash unchanged)
-
-**Implementation:**
-- `nrt/tests/test_regression.py` — pytest-parametrize over the matrix
-- `nrt/tests/contracts/` — JSON Schema files per source system
-- `nrt/tests/conftest.py` — shared fixtures for Postgres setup, channel routing
-- Runs in CI on every PR (subset: small scale) and nightly (full matrix)
-
-**Acceptance criteria:** 
-- Adding a new source system without adding corresponding contract + test cases causes CI failure.
-- Adding a new matching rule without regression coverage causes CI failure.
-- All 150 matrix cells pass. 
-- Zero false positives (tests are deterministic, no timing dependencies).
-- Full suite runs in <5 minutes on CI.
-
----
+## Project Structure
 
 ```
 MasterDataManagement/
@@ -1534,6 +1539,7 @@ MasterDataManagement/
         producer.py             # Kafka outbound producer
         batch_resolve.py        # Full re-resolution CLI
         test_producer.py        # Faker-based event generator
+        unmatch.py              # Cluster split / unmatch (BIZ-15)
     app/
       streamlit_app.py          # Golden record viewer (port 8501)
       audit_viewer.py           # Audit log viewer (port 8502)
@@ -1541,6 +1547,7 @@ MasterDataManagement/
       001_source_tables.sql
       002_golden_tables.sql
       003_audit_tables.sql
+      004_suppressions_table.sql
     tests/
       test_mappers.py
       test_matching.py
@@ -1548,8 +1555,11 @@ MasterDataManagement/
       test_dq.py
       test_audit.py
       e2e_test.py
+      e2e_unmatch.py            # BIZ-15 interactive unmatch E2E
+      bench_get_tps.py          # GET throughput benchmark
       run_e2e.sh
-      regression/               # TST-05: Full-path regression suite (99 tests)
+      run_e2e_unmatch.sh
+      regression/               # TST-05: Full-path regression suite (106 tests)
         manifest.py
         contracts.py
         conftest.py
@@ -1557,4 +1567,5 @@ MasterDataManagement/
         test_matrix.py
         test_boundaries.py
         test_interfaces.py
+        test_unmatch.py
 ```

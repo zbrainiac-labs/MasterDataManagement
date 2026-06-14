@@ -231,6 +231,12 @@ def batch_resolve_fast(reset: bool = False):
             )
 
     conn.commit()
+
+    # Advance cluster_seq past the highest assigned cluster_id
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT setval('cluster_seq', {num_clusters + 1})")
+    conn.commit()
+
     logger.info("Clusters + XREF written in %.1fs", time.time() - write_start)
 
     # --- Step 6: Compute golden records per cluster ---

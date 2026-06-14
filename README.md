@@ -21,7 +21,7 @@ Two implementations, same matching logic, same golden record output:
 | | Batch (bulk/) | Near-Real-Time (nrt/) |
 |---|---|---|
 | **Engine** | Snowflake Dynamic Tables | Python + Kafka + Postgres |
-| **Latency** | Hourly (DT target_lag) | ~103ms per update |
+| **Latency** | Hourly (DT target_lag) | < 50ms per update |
 | **Scale** | 1,500 records (dev) | Tested at 1M records |
 | **Deployment** | Snowflake DCM | Docker Compose (local) / SPCS (prod) |
 
@@ -68,11 +68,13 @@ cd nrt/tests
 | `./run_e2e.sh --transport both --mode continuous` | Compare Kafka vs REST latency side-by-side |
 | `./run_e2e.sh --scale medium --duration 60` | 100K records + 60s steady-state at 100/sec |
 | `./run_e2e.sh --scale large --duration 300` | 1M records + 5min steady-state (load test) |
+| `./run_e2e.sh --scale large --transport rest --mode single` | 1M records + 5min steady-state (load test) |
+| `./run_e2e_unmatch.sh` | Interactive unmatch E2E: merge → split → verify suppression → cleanup |
 
 ### Unit Tests
 
 ```bash
-cd nrt && pytest tests/ -v            # 147 tests: mappers, matching, survivorship, DQ, audit, regression, interfaces
+cd nrt && pytest tests/ -v            # 154 tests: mappers, matching, survivorship, DQ, audit, regression, unmatch, interfaces
 ```
 
 ### Streamlit Viewers
@@ -110,7 +112,7 @@ curl -X POST http://localhost:8000/api/v1/ingest/crm_a \
   -H "Content-Type: application/json" \
   -d '{"src_customer_id": "A001", "first_name": "Bill", "last_name": "Smith", "email": "bill@acme.com", "phone": "+11043321819"}'
 
-# Response (synchronous, ~32ms):
+# Response (synchronous, ~25ms):
 # {"changed": true, "customer_id": 42, "event_type": "UPDATE", "first_name": "Bill", ...}
 
 # Read endpoints
@@ -125,6 +127,7 @@ curl http://localhost:8000/api/v1/customers/42/history
 | `/api/v1/customers/{id}` | GET | Current golden record |
 | `/api/v1/customers/{id}/sources` | GET | Source records in cluster |
 | `/api/v1/customers/{id}/history` | GET | SCD2 history |
+| `/api/v1/admin/unmatch` | POST | Split records from cluster (BIZ-15) |
 | `/api/v1/health` | GET | Health check |
 
 ### NRT Pipeline Latency (1M records)
@@ -132,7 +135,7 @@ curl http://localhost:8000/api/v1/customers/42/history
 ```
 produce to Kafka ─────> consumer polls ─> map ─> UPSERT ─> resolve ─> survivorship ─> DQ ─> SCD2 write ─> done
        |                                                                                                   |
-       └────────────────────────────────────────── ~100ms ─────────────────────────────────────────────────┘
+       └────────────────────────────────────────── < 100ms ─────────────────────────────────────────────────┘
 ```
 
 To consume events live in a terminal:
@@ -152,7 +155,7 @@ For full details (architecture, matching rules, survivorship, DQ scoring), see [
 
 ## NRT Pipeline (nrt/)
 
-The near-real-time pipeline processes single Kafka events through entity resolution in ~103ms at 1M records.
+The near-real-time pipeline processes single Kafka events through entity resolution in < 50 ms at 1M records.
 
 - **Engine:** Python consumer + Postgres + Kafka
 - **Matching:** 6 rules (email exact, phone normalized, canonical name, Jaro-Winkler, SOUNDEX, email domain + name)

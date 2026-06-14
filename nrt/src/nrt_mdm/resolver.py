@@ -10,6 +10,31 @@ Performance-optimized for 1M+ records:
 from nrt_mdm.matching import compute_match_score, MATCH_THRESHOLD
 from nrt_mdm.models import SourceCustomer
 
+# ---------------------------------------------------------------------------
+# Suppression check (BIZ-15)
+# ---------------------------------------------------------------------------
+
+CHECK_SUPPRESSION_SQL = """
+    SELECT 1 FROM match_suppressions
+    WHERE (source_system_a = %(sys_a)s AND source_key_a = %(key_a)s
+           AND source_system_b = %(sys_b)s AND source_key_b = %(key_b)s)
+       OR (source_system_a = %(sys_b)s AND source_key_a = %(key_b)s
+           AND source_system_b = %(sys_a)s AND source_key_b = %(key_a)s)
+    LIMIT 1
+"""
+
+
+def is_suppressed(conn, record_a: SourceCustomer, record_b: SourceCustomer) -> bool:
+    """Check if a merge between these two records is suppressed."""
+    with conn.cursor() as cur:
+        cur.execute(CHECK_SUPPRESSION_SQL, {
+            "sys_a": record_a.source_system,
+            "key_a": record_a.source_key,
+            "sys_b": record_b.source_system,
+            "key_b": record_b.source_key,
+        })
+        return cur.fetchone() is not None
+
 
 # Maximum candidates per blocking tier
 CANDIDATE_LIMIT = 50
@@ -300,10 +325,11 @@ def resolve(conn, record: SourceCustomer) -> tuple[int, bool]:
     """
     candidates = find_candidates(conn, record)
 
-    # Score candidates and collect matching ones
+    # Score candidates and collect matching ones (respecting suppressions)
     matched_candidates = [
         c for c in candidates
         if compute_match_score(record, c) >= MATCH_THRESHOLD
+        and not is_suppressed(conn, record, c)
     ]
 
     # Batch lookup cluster_ids for all matched candidates

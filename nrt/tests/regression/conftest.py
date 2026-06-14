@@ -51,9 +51,13 @@ def pg_conn():
     with conn.cursor() as cur:
         cur.execute("""
             TRUNCATE source_customers, customer_clusters, golden_customers,
-                     customer_xref, audit_events RESTART IDENTITY CASCADE
+                     customer_xref, audit_events, match_suppressions RESTART IDENTITY CASCADE
         """)
     conn.commit()
+
+    # Clear in-memory cluster cache (module-level singleton)
+    from nrt_mdm.resolver import cluster_cache
+    cluster_cache._cache.clear()
 
     yield conn
 

@@ -193,3 +193,52 @@ if query:
                 st.info("No history.")
             else:
                 st.dataframe(history, width="stretch", hide_index=True)
+
+            # ----- Admin: Unmatch (BIZ-15) -----
+            if sources is not None and len(sources) > 1:
+                st.divider()
+                st.subheader("Admin: Unmatch / Split Cluster")
+                st.caption(
+                    "Select source records that were incorrectly merged into this cluster. "
+                    "They will be moved to a new cluster with their own golden record."
+                )
+
+                # Checkboxes for each source record
+                split_selections = []
+                for i, row in sources.iterrows():
+                    label = f"{row['source_system']}|{row['source_key']} ({row['first_name']} {row['last_name']}, {row['email']})"
+                    if st.checkbox(label, key=f"unmatch_{i}"):
+                        split_selections.append({
+                            "source_system": row["source_system"],
+                            "source_key": row["source_key"],
+                        })
+
+                reason = st.text_input("Reason for unmatch (required)", placeholder="e.g. False positive: father/son share phone")
+
+                if st.button("Unmatch Selected", type="primary", disabled=not split_selections or not reason):
+                    if len(split_selections) >= len(sources):
+                        st.error("Cannot split ALL records out. At least one must remain in the original cluster.")
+                    else:
+                        import httpx
+                        api_url = os.environ.get("MDM_API_URL", "http://localhost:8000")
+                        try:
+                            resp = httpx.post(
+                                f"{api_url}/api/v1/admin/unmatch",
+                                json={
+                                    "cluster_id": selected_id,
+                                    "source_records_to_split": split_selections,
+                                    "reason": reason,
+                                },
+                                timeout=30.0,
+                            )
+                            if resp.status_code == 200:
+                                result = resp.json()
+                                st.success(
+                                    f"Unmatch complete. New cluster: **{result['new_cluster_id']}**. "
+                                    f"Suppressions created: {result['suppressions_created']}."
+                                )
+                                st.json(result)
+                            else:
+                                st.error(f"Error: {resp.json().get('detail', resp.text)}")
+                        except Exception as e:
+                            st.error(f"Request failed: {e}")
