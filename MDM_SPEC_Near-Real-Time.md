@@ -2,8 +2,6 @@
 
 ## Marcel Däppen | Principal Solutions Engineer | Snowflake | EMEA Growth Markets
 
-Version 2026-06-12
-
 ## Context
 
 The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design replicates the fuzzy matching, survivorship, and DQ logic in Postgres for sub-second golden record updates, with Kafka as the event bus using **single-message processing** (one record processed at a time, with cluster-local recomputation and conditional golden publish).
@@ -15,13 +13,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 
 ### Source Field Mappings
 
-| CRM_A raw fields | CRM_B raw fields | CRM_C raw fields |
-|---|---|---|
-| `src_customer_id` | `customer_key` | `ticket_customer_id` |
-| `first_name` | `name` (full name) | `caller_name` (full name) |
-| `last_name` | (split from name) | (split from caller_name) |
-| `email` | `email_address` | `callback_email` |
-| `phone` | `mobile` | `callback_phone` |
+See [MDM_SPEC_Shared.md](MDM_SPEC_Shared.md#source-field-mappings) for the canonical field mapping table and normalization rules across all three CRM sources.
 
 ---
 
@@ -30,36 +22,29 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 **In scope (Phase 1 / MVP):**
 - Customer matching only (name, email, phone)
 - Deterministic + probabilistic rules (D01, D02, C01, P01, P03, P04)
-- No address-based matching in scoring (MATCH-P02 and MATCH-P05 deferred to Phase 2)
+- No address-based matching in scoring (MATCH-P02 and MATCH-P05 deferred to Phase 3 with BIZ-13)
 - No deletes/tombstones (insert/update CDC only)
 - No ML models -- rule-based only
 - Single consumer instance
 - Docker Desktop local testing
 - At-least-once processing with idempotent UPSERTs
 
-**Out of scope / Phase 2:**
-- Address pipeline (BIZ-13) -- address survivorship, address DQ, address golden records
-- Address-based match scoring (MATCH-P02 street JW, MATCH-P05 phone+city)
+**Out of scope (Phase 2 -- production readiness):**
+- Production HA/failover for Postgres
 - Delete/tombstone event handling
 - Schema registry / Avro serialization
 - Multi-region deployment
-- Production HA/failover for Postgres
 - ML-based matching or active learning
+
+**Out of scope (Phase 3 -- domain expansion):**
+- Address pipeline (BIZ-13) -- address survivorship, address DQ, address golden records
+- Address-based match scoring (MATCH-P02 street JW, MATCH-P05 phone+city)
 
 ---
 
 ## Glossary
 
-| Term | Definition |
-|------|-----------|
-| `source_key` | Primary key from the originating CRM system (e.g., `src_customer_id` in CRM_A) |
-| `cluster_id` | Auto-incremented ID grouping matched source records. One cluster = one real-world entity. **Note:** `customer_id` is an alias for `cluster_id` used in outbound events and XREF -- they always hold the same value. Schema uses `cluster_id` internally and `customer_id` in external-facing contracts (outbound Kafka, Snowflake tables, XREF). |
-| `customer_id` | Alias for `cluster_id` in external-facing contexts (outbound events, XREF, Snowflake). Always equals `cluster_id`. |
-| `golden record` | The single current best-version of a cluster, after survivorship rules are applied |
-| `current row` | The golden record row with `is_current=TRUE` (`valid_to = '9999-12-31'`) |
-| `history row` | A closed golden record version with `is_current=FALSE` |
-| `event_timestamp` | When the source system changed the record (from Kafka message timestamp) |
-| `ingested_at` | When the MDM engine received and processed the record (Postgres `NOW()`) |
+See [MDM_SPEC_Shared.md](MDM_SPEC_Shared.md#glossary) for the canonical glossary shared across both pipelines, including temporal terms (`event_timestamp`, `ingested_at`, `file_date`).
 
 ---
 
@@ -71,6 +56,18 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 - Source systems publish inserts and updates only (no deletes in MVP)
 - Each source system has a stable schema -- field names do not change without consumer redeployment
 - Snowflake Managed Postgres provides standard PostgreSQL wire protocol and DDL compatibility
+
+---
+
+## Phase Definitions
+
+| Phase | Scope | Description |
+|-------|-------|-------------|
+| Phase 1 | Core MDM pipeline | Field mapping, matching, survivorship, DQ, CDC, golden record, SCD2. Local Docker dev environment. |
+| Phase 2 | Production readiness | HA, security (SEC-01-06), observability (OBS-01), CI/CD (DEP-01-05), connection resilience (INF-11,13-17), Snowflake integration (INF-06,07). |
+| Phase 3 | Extended capabilities | Address pipeline (BIZ-13), read replica (INF-12), multi-tenant isolation at scale. |
+
+All requirement status labels reference these phases. Phase 1 items are Done or in progress. Phase 2 items are planned for production go-live. Phase 3 items are planned for post-launch.
 
 ---
 
@@ -92,7 +89,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | BIZ-10 | Batch Re-Resolution | Done |
 | BIZ-11 | SCD2 History | Done |
 | BIZ-12 | XREF Table | Done |
-| BIZ-13 | Address Pipeline | Planned (Phase 2) |
+| BIZ-13 | Address Pipeline | Planned (Phase 3) |
 | BIZ-14 | REST API (inbound + synchronous CDC response) | Done |
 | BIZ-15 | Cluster Split / Unmatch (fix-forward with CDC) | Done |
 
@@ -101,7 +98,7 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | ID | Title | Status |
 |----|-------|--------|
 | INF-01 | Kafka Container (local dev/test) | Done |
-| INF-01b | Kafka on Confluent Cloud (production) | Planned |
+| INF-01b | Kafka (customer-managed in production) | Planned |
 | INF-02 | Postgres Container (local dev/test) | Done |
 | INF-02b | Snowflake Managed Postgres (production) | Planned |
 | INF-03 | MDM Engine Container (local dev/test) | Done |
@@ -113,6 +110,13 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 | INF-08 | HA: Kafka Multi-Broker Cluster | Planned (Phase 2) |
 | INF-09 | HA: Postgres Replication & Failover | Planned (Phase 2) |
 | INF-10 | HA: MDM Engine Multi-Instance (active-active) | Planned (Phase 2) |
+| INF-11 | Connection Resilience (auto-reconnect + retry) | Planned (Phase 2) |
+| INF-12 | Postgres Read Replica for GET traffic | Planned (Phase 3) |
+| INF-13 | Idempotent Event Processing | Planned (Phase 2) |
+| INF-14 | Circuit Breaker on Postgres | Planned (Phase 2) |
+| INF-15 | Kafka Dead-Letter Topic | Planned (Phase 2) |
+| INF-16 | Automated Failover Testing | Planned (Phase 2) |
+| INF-17 | Backup & Point-in-Time Recovery Validation | Planned (Phase 2) |
 
 ### Security Requirements (SEC)
 
@@ -159,10 +163,37 @@ The current Snowflake MDM pipeline runs as batch (TARGET_LAG = 24h). This design
 |---------|---------------|-----|-----------|
 | Kafka partitions | 1 | 3 | 3+ |
 | Kafka replication | 1 | 1 | 3 |
-| Postgres | `postgres:16-alpine` container | Snowflake Managed Postgres | Snowflake Managed Postgres |
+| Kafka ownership | Local container | Local container | Customer-managed |
+| Postgres | `snowflake native` container | Snowflake Managed Postgres | Snowflake Managed Postgres |
 | MDM Engine | Docker container | SPCS (Snowpark Container Services) | SPCS (Snowpark Container Services) |
-| Consumer instances | 1 | 1 | 1-3 (per partition) |
+| Postgres instances | 1 | 1 | 2 (HA, active-active) |
+| API instances | 1 | 1 | 3 (HA, across placement groups) |
+| SPCS compute pool | — | GEN_ARM_G1_2 | GEN_ARM_G1_2 (1 vCPU, 6GB) |
 | Topic retention | 1 day | 1 day | 7 days |
+
+### Production Infrastructure Sizing
+
+Detailed sizing with cost estimates is maintained in `PRODUCTION_SIZING.md` (gitignored, not committed). Key production parameters:
+
+**Architecture principle: No direct DB access.** All clients and systems interact exclusively via REST API or Kafka. Postgres is an internal implementation detail — no external SQL connections. REST traffic is protected by the API gateway (SEC-01/SEC-02). Kafka traffic is protected by the customer's Kafka network controls and ACLs.
+
+**Postgres (Snowflake Managed Postgres, HA):**
+
+| Phase | Compute Family | vCPU | RAM | Storage | Use Case |
+|-------|---------------|------|-----|---------|----------|
+| Phase 1: Initial Load | STANDARD_8XL | 32 | 128GB | 1TB allocated | Bulk ingest of 65M records + batch_resolve |
+| Phase 2: Steady-State | HIGHMEM_XL | 4 | 32GB | 1TB allocated | 50 writes/sec peak, 500 reads/sec peak |
+
+Elastic resize between phases via `ALTER POSTGRES INSTANCE ... SET COMPUTE_FAMILY`. This is a maintenance operation involving failover — not instantaneous.
+
+**SPCS (MDM API + Engine):**
+
+| Service | Compute Pool | Instances | Notes |
+|---------|-------------|-----------|-------|
+| MDM API | GEN_ARM_G1_2 (1 vCPU, 6GB) | 3 | HA across placement groups |
+| MDM Engine | GEN_ARM_G1_2 (1 vCPU, 6GB) | 2 | Kafka consumer group, active-active |
+
+SPCS instances remain unchanged between Phase 1 and Phase 2. The bottleneck during batch_resolve is Postgres, not the application containers.
 
 ---
 
@@ -195,7 +226,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 | Malformed JSON payload | Log error, skip message, commit offset, increment `errors_skipped` counter |
 | Unknown topic / unregistered mapper | Log error, skip message, commit offset |
 | Postgres connection lost | Retry with exponential backoff (3 attempts), then crash and let orchestrator restart |
-| Kafka publish fails after DB commit | Retry produce (idempotent producer handles duplicates). On persistent failure, log to DLQ topic `topic.mdm.dlq` |
+| Kafka publish fails after DB commit | Retry produce (idempotent producer handles duplicates). On persistent failure, log to DLQ topic `topic.mdm.dead-letter` |
 | Duplicate message delivery | No-op -- UPSERT is idempotent, golden recomputation is deterministic |
 | Out-of-order message | UPSERT `WHERE` clause rejects older events -- no overwrite, no error |
 | Consumer crash mid-processing | Message not committed -- reprocessed on restart (at-least-once) |
@@ -222,7 +253,7 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 **Logging:** Structured JSON logs with `source_system`, `source_key`, `cluster_id`, `event_type` for traceability.
 
-**DLQ:** `topic.mdm.dlq` receives messages that failed Kafka outbound publish after 3 retries. Includes original golden payload + error reason. Note: malformed inbound messages are logged and skipped (not sent to DLQ) because they cannot be meaningfully reprocessed without source-side fixes.
+**DLQ:** `topic.mdm.dead-letter` receives messages that failed Kafka outbound publish after 3 retries. Includes original golden payload + error reason. Note: malformed inbound messages are logged and skipped (not sent to DLQ) because they cannot be meaningfully reprocessed without source-side fixes.
 
 ---
 
@@ -283,11 +314,8 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 **What:** Pre-computed blocking keys stored as indexed columns on `source_customers`. Candidate lookup queries these indexes to avoid full table scans. Any record sharing at least one blocking key with the incoming record becomes a candidate for pairwise scoring.
 
 **How:**
-- 3 blocking keys computed at ingest time:
-  - `block_soundex` = `jellyfish.soundex(last_name)` (4-char code)
-  - `block_email_domain` = substring from `@` onward (e.g., `@acme.com`)
-  - `block_phone_suffix` = last 4 digits of phone number
-- Postgres B-tree indexes: `idx_block_soundex`, `idx_block_email`, `idx_block_phone`
+- 3 blocking keys computed at ingest time -- see [MDM_SPEC_Shared.md: Blocking Keys](MDM_SPEC_Shared.md#blocking-keys) for algorithms and examples
+- NRT-specific: Postgres B-tree indexes on `source_customers`: `idx_block_soundex`, `idx_block_email`, `idx_block_phone`
 - Query uses OR across all three with IS NOT NULL guards
 - Typical block size: 10-50 records per blocking key value
 
@@ -300,19 +328,10 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 **What:** Pairwise scoring of the incoming record against each candidate. Uses deterministic rules (high confidence, exact matches) and probabilistic rules (fuzzy string similarity). The final score combines both: `MAX(deterministic) + SUM(probabilistic)`. If the combined score >= 0.70, the records are considered a match. There is **no machine learning model** -- this is a classical approach using the `jellyfish` library for Jaro-Winkler similarity (~1 microsecond per comparison).
 
 **How:**
-- Deterministic rules (take the MAX):
-  - MATCH-D01: Email exact equality = 1.00
-  - MATCH-D02: Phone last-10 digits equality = 0.95
-  - MATCH-C01: Canonical name exact (case-insensitive) = 0.80
-- Probabilistic rules (SUM all that fire):
-  - MATCH-P01: Full name Jaro-Winkler >= 0.85 = jw * 0.30
-  - MATCH-P03: Last name SOUNDEX equality = 0.20
-  - MATCH-P04: Email domain match + first name JW >= 0.90 = 0.15
-  - ~~MATCH-P02: Address street JW + postal exact = 0.25~~ **(Phase 2)**
-  - ~~MATCH-P05: Phone last-7 + same city = 0.10~~ **(Phase 2)**
-- Formula (MVP): `final = MAX(D01, D02, C01) + P01 + P03 + P04`
-- Threshold: `>= 0.70` triggers a merge
+- Scoring formula: `final = MAX(deterministic) + SUM(probabilistic)`, threshold >= 0.70
+- Full rule catalog (MATCH-D01, D02, C01, P01-P05) with IDs, weights, and scoring details: see [MDM_SPEC_Shared.md](MDM_SPEC_Shared.md#matching-rule-catalog)
 - Library: `jellyfish.jaro_winkler_similarity()` for JW, `jellyfish.soundex()` for SOUNDEX
+- Match suppressions (BIZ-15) are checked before scoring — suppressed pairs are skipped
 
 **Acceptance criteria:** Known matching pairs from the batch pipeline (Bill/William Smith, same email) produce scores >= 0.70. Known non-matches produce scores < 0.70.
 
@@ -346,13 +365,10 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 **How:**
 - Query all source records in the affected cluster from `source_customers`
-- For each attribute (first_name, last_name, email, phone), pick the best value:
-  1. Completeness: non-null, valid format (e.g., email contains @, phone >= 7 digits)
-  2. Source priority: CRM_A=1, CRM_B=2, CRM_C=3 (lower = higher trust)
-  3. Recency: `event_timestamp DESC` (most recently changed at source wins)
+- For each attribute, pick the best value using the shared survivorship rules: completeness -> source trust -> recency (see [MDM_SPEC_Shared.md](MDM_SPEC_Shared.md#survivorship-rules))
 - Compute `source_count = COUNT(DISTINCT source_system)` in cluster
 - UPSERT result into `golden_customers`
-- Typically touches 1-3 source records per cluster
+- Implementation: Python `pick_best()` function. Typically touches 1-3 source records per cluster.
 
 **Acceptance criteria:** Given CRM_A (email=null) and CRM_B (email=valid), survivorship picks CRM_B's email regardless of source priority.
 
@@ -364,19 +380,8 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 **How:**
 - Python function `compute_dq_score(golden) -> int`
-- Rules (same as `DT_CUSTOMER_GOLDEN_FUZZY`):
-  - DQ-001: Invalid email format = -20
-  - DQ-002: Disposable email domain = -5
-  - DQ-003: Missing/short first_name = -20
-  - DQ-004: Special chars in first_name = -5
-  - DQ-005: Missing/short last_name = -20
-  - DQ-006: Special chars in last_name = -5
-  - DQ-007: Invalid phone format = -5
-  - DQ-008: Placeholder phone (0000000000, etc.) = -20
-  - DQ-C01: No contact method (no valid email AND no valid phone) = -20
-  - DQ-C02: No complete name (both first and last missing) = -20
-  - DQ-X03: Name appears in email = +5
-  - DQ-AI01: (skipped in NRT -- no AI fake detection)
+- Applies the shared DQ rule catalog -- see [MDM_SPEC_Shared.md](MDM_SPEC_Shared.md#dq-rule-catalog)
+- NRT-specific: DQ-AI01 (fake name detection) is skipped — sub-second latency leaves no room for model inference
 - Formula: `GREATEST(0, LEAST(100, 100 + sum_of_penalties_and_bonuses))`
 
 **Acceptance criteria:** A golden record with valid email, valid name, valid phone produces DQ score >= 95. A record with no email and no phone produces DQ score <= 60.
@@ -484,11 +489,11 @@ Kafka publish happens **after** transaction commit. If publish fails, the consum
 
 **Acceptance criteria:** Every row in `source_customers` has exactly one corresponding row in `customer_xref`. XREF changes (new assignment, reassignment on cluster merge) emit events to `topic.mdm.xref`.
 
-### BIZ-13: Address Pipeline (Phase 2)
+### BIZ-13: Address Pipeline (Phase 3)
 
-**Status:** Planned (Phase 2) — `source_addresses` schema ready
+**Status:** Planned (Phase 3) — `source_addresses` schema ready
 
-**What:** Parallel address resolution alongside customer. Source addresses linked to customer clusters. Survivorship picks best address per customer. Address DQ scoring (DQ-011, DQ-012, DQ-X04). Note: address fields are NOT used in customer match scoring in MVP (see Phase 2 deferred rules).
+**What:** Parallel address resolution alongside customer. Source addresses linked to customer clusters. Survivorship picks best address per customer. Address DQ scoring (DQ-011, DQ-012, DQ-X04). Note: address fields are NOT used in customer match scoring in Phase 1 (MATCH-P02, MATCH-P05 deferred to Phase 3).
 
 **How:**
 - `source_addresses` table DDL created for forward compatibility
@@ -656,14 +661,14 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 **What:** Postgres hosts all MDM tables. Container for local/CI, Snowflake Managed Postgres for production (not SPCS). Same schema DDL works in both environments.
 
 **How:**
-- Local: `postgres:16-alpine` (multi-arch), port `5432`
+- Local: `postgres:17-alpine` (multi-arch), port `5432`
 - Init scripts: mount `schema/*.sql` into `/docker-entrypoint-initdb.d/`
 - Volume: `/var/lib/postgresql/data` for persistence
 - Health check: `pg_isready -U mdm`
 - Extensions: none required (all string similarity runs in Python)
-- **Production:** Snowflake Managed Postgres. Connection switches via `POSTGRES_DSN` env var. No container-specific features used.
+- **Production:** Snowflake Managed Postgres (HA mode). Connection switches via `POSTGRES_DSN` env var. No container-specific features used. Compute family, storage allocation, and connection pool sizing are documented in `PRODUCTION_SIZING.md` and the Environment Configuration section.
 
-**Acceptance criteria:** Schema DDL runs without modification on both `postgres:16` container and Snowflake Managed Postgres.
+**Acceptance criteria:** Schema DDL runs without modification on both `postgres:17` container and Snowflake Managed Postgres.
 
 ### INF-03: MDM Engine Container
 
@@ -679,7 +684,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 - Stateless (all state in Postgres)
 - Waits for Kafka + Postgres to be healthy before starting
 - Scaling: run multiple replicas (one per Kafka partition) for higher throughput
-- **Production:** Deployed as a SPCS (Snowpark Container Services) service in Snowflake. Same Docker image, pushed to Snowflake image registry. Connects to Snowflake Managed Postgres via internal networking. This is an explicit architectural decision: MDM Engine = SPCS, Postgres = Snowflake Managed Postgres, Kafka = external managed Kafka (e.g., Confluent Cloud).
+- **Production:** Deployed as a SPCS (Snowpark Container Services) service in Snowflake. Same Docker image, pushed to Snowflake image registry. Connects to Snowflake Managed Postgres via internal networking. Kafka = customer-managed (MDM connects via `KAFKA_BOOTSTRAP_SERVERS` env var; no Kafka infrastructure provisioned by MDM).
 
 **Acceptance criteria:** Container starts, connects to Kafka and Postgres, and begins processing within 10 seconds.
 
@@ -704,7 +709,14 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 
 **Status:** Done (~100ms at 1M records)
 
-**What:** The system must meet different throughput targets depending on deployment configuration.
+**What:** The system must meet the customer's production workload requirements.
+
+**Customer production workload:**
+- 65M unconsolidated source records, 10M consolidated golden records
+- 10M GET API calls/day (500 req/sec peak)
+- 50K inbound changes/day (50/sec peak, 150/sec burst)
+- 50 concurrent users, 100 data stewards, 15 administrators
+- Latency: p95 < 200ms (writes), p95 < 50ms (reads)
 
 **MVP baseline (single consumer, 1 partition):**
 - Target: 100-300 events/second sustained
@@ -752,7 +764,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
   - `golden_customers WHERE is_current = TRUE` → `CRMA_NRT_TB_CUSTOMER` (current golden, view or filtered mirror)
   - `customer_xref` → `CRMA_NRT_TB_XREF` (cross-reference)
   - `audit_events` → `MDM_AUDIT.EVENTS` (immutable audit trail for SEC-04 compliance, 7+ year retention)
-  - `source_addresses` → `CRMA_NRT_TB_ADDRESSES` **(Phase 2 — populated when BIZ-13 is implemented)**
+  - `source_addresses` → `CRMA_NRT_TB_ADDRESSES` **(Phase 3 — populated when BIZ-13 is implemented)**
 - Latency: near-real-time (seconds) — Snowflake Managed Postgres replication lag
 - No additional Kafka topics or connectors required — mirroring is native to Snowflake Managed Postgres
 - Snowflake-side `MDM_AUDIT.EVENTS`: NO UPDATE/DELETE grants, Time Travel = 90 days, Fail-safe = 7 days
@@ -770,10 +782,11 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 **What:** Production Kafka deployment must tolerate broker failures without message loss or pipeline interruption. Applies to both inbound topics (CRM events) and outbound topics (CDC golden/xref).
 
 **How:**
-- Confluent Cloud: multi-AZ cluster with `replication.factor=3` and `min.insync.replicas=2`
+- Customer-managed Kafka: MDM connects to the customer's existing Kafka infrastructure. No Kafka brokers provisioned by MDM.
+- Cluster must support `replication.factor=3` and `min.insync.replicas=2` for durability
 - Topics configured with `acks=all` on producers (MDM engine + REST API)
 - Consumer group rebalancing with `session.timeout.ms=30000` for graceful failover
-- Dead-letter topic (`topic.mdm.dlq`) for poison messages that survive retries
+- Dead-letter topic (`topic.mdm.dead-letter`) for poison messages that survive retries
 - Monitoring: under-replicated partitions alert, consumer lag alert
 
 **Acceptance criteria:** Single broker failure causes zero message loss. Consumer group rebalances within 30 seconds. No manual intervention required for single-broker failure.
@@ -812,6 +825,122 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 - Cluster cache invalidation: each instance maintains its own cache (eventually consistent via DB state)
 
 **Acceptance criteria:** With 2+ instances running, killing one instance causes no message loss (Kafka rebalances partitions to survivors within 30s). Throughput scales linearly with instance count up to partition count. No duplicate or conflicting golden record writes (Postgres row locking guarantees consistency).
+
+---
+
+### INF-11: Connection Resilience (auto-reconnect + retry)
+
+**Status:** Planned (Phase 2)
+
+**What:** API and engine automatically recover from Postgres connection loss (e.g., during HA failover) without manual restart or 500 errors.
+
+**How:**
+- Connection pool with health check (test connection before use, discard stale connections)
+- Exponential backoff retry on `OperationalError: the connection is lost` (max 3 retries, 1s → 2s → 4s)
+- Health endpoint (`/api/v1/health`) detects stale connections and reports unhealthy until pool recovers
+- Kafka consumer: catch connection errors in poll loop, reconnect and resume from last committed offset
+
+**Acceptance criteria:** During a Postgres HA failover, API returns 503 for the duration of failover, then automatically recovers without container restart. No manual intervention required. Zero message loss on Kafka consumer (replay from last offset).
+
+---
+
+### INF-12: Postgres Read Replica for GET traffic
+
+**Status:** Planned (Phase 3)
+
+**What:** A read replica handles all GET/read API requests, isolating read traffic from write traffic on the primary.
+
+**How:**
+- Snowflake Managed Postgres read replica (same storage size as primary, can use different compute family)
+- API routes: `GET /api/v1/customers/*`, `GET /api/v1/sources/*`, `GET /api/v1/history/*` → read replica connection
+- API routes: `POST /api/v1/ingest/*`, `POST /api/v1/admin/*` → primary connection
+- Two connection pools in API: `pg_read_pool` (replica) and `pg_write_pool` (primary)
+- If read replica is unavailable, fall back to primary (degraded mode)
+
+**Acceptance criteria:** Primary Postgres failover does not affect read API responses. Read replica failure does not affect write operations. Read latency p95 < 50ms is maintained during concurrent write load.
+
+---
+
+### INF-13: Idempotent Event Processing
+
+**Status:** Planned (Phase 2)
+
+**What:** Processing the same ingest event multiple times (e.g., Kafka consumer replay after crash) produces the same result without duplicates or side effects.
+
+**How:**
+- Deduplication key: `(source_system, source_key, hash(payload))` checked before processing
+- Upsert semantics on `source_customers` (already uses `ON CONFLICT`)
+- Idempotent golden record computation (deterministic survivorship → same input = same output)
+- Audit events include idempotency key to prevent duplicate audit entries on replay
+
+**Acceptance criteria:** Replaying the same Kafka message 3 times produces exactly 1 source record, 1 golden record update, and 1 audit event. No duplicate rows in any table.
+
+---
+
+### INF-14: Circuit Breaker on Postgres
+
+**Status:** Planned (Phase 2)
+
+**What:** When Postgres is overloaded or unreachable, the API fails fast with 503 instead of queuing requests until timeout, preventing cascading failures.
+
+**How:**
+- Circuit breaker pattern: closed (normal) → open (fail fast) → half-open (probe)
+- Trip threshold: 5 consecutive connection failures or p95 latency > 1s
+- Open duration: 10 seconds, then probe with single request
+- 503 response includes `Retry-After` header
+- Kafka consumer: pause consumption when circuit is open, resume when closed
+
+**Acceptance criteria:** When Postgres is unreachable, API returns 503 within 100ms (not after 30s timeout). Recovery is automatic when Postgres becomes available. No request backlog accumulates during outage.
+
+---
+
+### INF-15: Kafka Dead-Letter Topic
+
+**Status:** Planned (Phase 2)
+
+**What:** Messages that fail processing after N retries are moved to a dead-letter topic instead of blocking the consumer.
+
+**How:**
+- After 3 processing attempts with exponential backoff, publish failed message to `topic.mdm.dead-letter`
+- Dead-letter message includes: original message, error details, attempt count, timestamp
+- Consumer continues processing subsequent messages
+- Monitoring alert on dead-letter topic message count > 0
+- Admin tooling to inspect, fix, and replay dead-letter messages
+
+**Acceptance criteria:** A malformed or unprocessable message does not block the consumer. After 3 retries, the message appears in `topic.mdm.dead-letter` with error context. Consumer throughput on remaining messages is unaffected.
+
+---
+
+### INF-16: Automated Failover Testing
+
+**Status:** Planned (Phase 2)
+
+**What:** Scheduled chaos testing to validate that HA mechanisms (Postgres failover, SPCS instance recovery, Kafka consumer rebalancing) work as expected.
+
+**How:**
+- Monthly scheduled test: trigger Postgres failover via `ALTER POSTGRES INSTANCE mdm_pg FAILOVER`
+- Measure: actual recovery time, request error rate during failover, data consistency after recovery
+- SPCS: kill one API instance, verify load balancer removes it and remaining instances absorb traffic
+- Kafka: kill one engine instance, verify consumer group rebalances within 30s with no message loss
+- Results logged to audit trail and reviewed in ops runbook
+
+**Acceptance criteria:** Monthly failover test completes with: Postgres recovery < SLA target, zero data loss, API error rate returns to zero within 60s of failover completion. Test results documented and reviewed.
+
+---
+
+### INF-17: Backup & Point-in-Time Recovery Validation
+
+**Status:** Planned (Phase 2)
+
+**What:** Validate that Snowflake Managed Postgres automated backups and point-in-time recovery (PITR) work correctly for disaster recovery.
+
+**How:**
+- Verify backup frequency and retention (default: 10 days) meets RPO requirements
+- Quarterly PITR drill: fork instance to a specific point in time, verify data consistency
+- Document recovery procedure in ops runbook with step-by-step commands
+- Measure recovery time (RTO) for different dataset sizes
+
+**Acceptance criteria:** PITR drill restores a consistent database state to within 5 minutes of the target timestamp. Recovery procedure is documented and executable by any ops team member. Backup retention covers the agreed RPO window.
 
 ---
 
@@ -970,7 +1099,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 
 **How:**
 - **Postgres:** Transparent Data Encryption (TDE) at volume level (EBS encryption / Snowflake Managed Postgres built-in)
-- **Kafka:** Topic-level encryption (Confluent Cloud: enabled by default)
+- **Kafka:** Topic-level encryption (customer-managed Kafka: encryption configuration per customer policy)
 - **Field-level encryption (optional, for highly sensitive fields):**
   - Encrypt `email`, `phone` with AES-256-GCM before writing to `source_customers`
   - Decrypt on read within MDM engine only (key from Vault)
@@ -1122,7 +1251,8 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 - **Production (Snowflake):**
   - `snow` CLI declarative deployments (SPCS services, image repos, compute pools)
   - Snowflake DCM project for database objects (schemas, tables, grants)
-  - Terraform/Pulumi for cloud-native resources (Confluent Cloud cluster, VPC peering, DNS)
+  - Terraform/Pulumi for cloud-native resources (VPC peering, DNS). Note: Kafka is customer-managed, not provisioned by MDM.
+- **Production sizing parameters:** Compute families, instance counts, storage allocations, and connection pool sizes are documented in `PRODUCTION_SIZING.md`. IaC templates must reference these values.
 - **Environment parity:** Same Docker image runs locally and in SPCS. Environment-specific config via secrets + env vars only.
 - **Drift detection:** Scheduled CI job compares declared state vs actual state, alerts on drift.
 - **Disaster recovery:** Full environment rebuild from IaC + latest Postgres backup + Kafka topic replay. Target: RTO < 1 hour.
@@ -1378,7 +1508,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 |  | - current golden only     |   | - CUSTOMER (current)          |  |
 |  | - sub-second queries      |   | - CUSTOMER_HISTORY (SCD2)     |  |
 |  +---------------------------+   | - XREF                        |  |
-|                                  | - ADDRESSES (Phase 2)         |  |
+|                                  | - ADDRESSES (Phase 3)         |  |
 |                                  +-------------------------------+  |
 +---------------------------------------------------------------------+
 ```

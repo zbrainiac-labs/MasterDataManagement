@@ -14,6 +14,14 @@ Master Data Management solves this by **resolving** duplicates across sources, a
 
 This repository implements MDM using only Snowflake-native features (batch pipeline) and a lightweight Kafka+Postgres engine (near-real-time pipeline). No commercial MDM platform required.
 
+### Specification Documents
+
+| Document | Scope |
+|----------|-------|
+| [MDM_SPEC_Shared.md](MDM_SPEC_Shared.md) | Shared business rules: matching, survivorship, DQ scoring, source definitions, glossary. Single source of truth referenced by both pipelines. |
+| [MDM_SPEC_Bulk.md](MDM_SPEC_Bulk.md) | Batch pipeline: Snowflake-native (Dynamic Tables, Cortex AI). Business-facing narrative with architecture and dataflow. |
+| [MDM_SPEC_Near-Real-Time.md](MDM_SPEC_Near-Real-Time.md) | NRT pipeline: Kafka + Postgres + SPCS. Full technical spec with 52 requirement items across BIZ, INF, SEC, OBS, DEP, TST. |
+
 For a detailed walkthrough of the batch approach, see: [Master Data Management (MDM) with Snowflake Native Features](https://medium.com/@marcel.daeppen_74522/master-data-management-mdm-with-snowflake-native-features-01b27456039f)
 
 Two implementations, same matching logic, same golden record output:

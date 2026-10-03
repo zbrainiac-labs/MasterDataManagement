@@ -12,3 +12,4 @@ bulk/app/.streamlit/secrets.toml
 .streamlit/secrets.toml
 .snowflake/
 PRODUCTION_SIZING.md
+MIGRATION_TO_SNOWFLAKE.md
