@@ -117,39 +117,14 @@ def generate_customers_crm_c(
 
     idx = 1
     for orig in overlap_a:
-        scenario = idx % 3
-        if scenario == 0:
-            customers.append(Customer(
-                id=f"C{idx:06d}",
-                first_name=orig.first_name,
-                last_name=orig.last_name,
-                email=orig.email,
-                phone=generate_phone('dashes')
-            ))
-        elif scenario == 1:
-            normalized = ''.join(filter(str.isdigit, orig.phone))
-            customers.append(Customer(
-                id=f"C{idx:06d}",
-                first_name=orig.first_name.upper() if orig.first_name else fake.first_name(),
-                last_name=orig.last_name.upper() if orig.last_name else fake.last_name(),
-                email=fake.email(),
-                phone=f"+1{normalized[-10:]}" if len(normalized) >= 10 else generate_phone('full')
-            ))
-        else:
-            customers.append(Customer(
-                id=f"C{idx:06d}",
-                first_name=typo_name(orig.first_name) if orig.first_name else fake.first_name(),
-                last_name=orig.last_name,
-                email=orig.email,
-                phone=generate_phone('full')
-            ))
+        customers.append(_CRM_C_FROM_A[idx % 3](f"C{idx:06d}", orig))
         idx += 1
 
     for orig in overlap_b:
         customers.append(Customer(
             id=f"C{idx:06d}",
-            first_name=orig.first_name if orig.first_name else fake.first_name(),
-            last_name=orig.last_name if orig.last_name else fake.last_name(),
+            first_name=orig.first_name or fake.first_name(),
+            last_name=orig.last_name or fake.last_name(),
             email=orig.email,
             phone=generate_phone('parens')
         ))
@@ -157,31 +132,54 @@ def generate_customers_crm_c(
 
     unique_count = count - len(overlap_a) - len(overlap_b)
     for _ in range(unique_count):
-        dq_scenario = idx % 8
         first_name = fake.first_name()
         last_name = fake.last_name()
-        if dq_scenario == 0:
-            email = 'no-reply@callcenter.internal'
-            phone = generate_phone('full')
-        elif dq_scenario == 1:
-            email = fake.email()
-            phone = 'N/A'
-        elif dq_scenario == 2:
-            email = None
-            phone = generate_phone('full')
-        else:
-            email = fake.email()
-            phone = generate_phone(random.choice(['full', 'dashes', 'parens']))
-        customers.append(Customer(
-            id=f"C{idx:06d}",
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            phone=phone
-        ))
+        email, phone = _crm_c_unique_contact(idx % 8)
+        customers.append(Customer(id=f"C{idx:06d}", first_name=first_name, last_name=last_name,
+                                  email=email, phone=phone))
         idx += 1
 
     return customers
+
+
+def _normalized_phone_or_new(phone: str) -> str:
+    """Same number re-formatted as +1XXXXXXXXXX (MATCH-D02), or a fresh one."""
+    normalized = ''.join(filter(str.isdigit, phone))
+    return f"+1{normalized[-10:]}" if len(normalized) >= 10 else generate_phone('full')
+
+
+def _crm_c_same_email(cid: str, orig: Customer) -> Customer:
+    return Customer(id=cid, first_name=orig.first_name, last_name=orig.last_name,
+                    email=orig.email, phone=generate_phone('dashes'))
+
+
+def _crm_c_upper_name_same_phone(cid: str, orig: Customer) -> Customer:
+    first_name = orig.first_name.upper() if orig.first_name else fake.first_name()
+    last_name = orig.last_name.upper() if orig.last_name else fake.last_name()
+    email = fake.email()
+    return Customer(id=cid, first_name=first_name, last_name=last_name,
+                    email=email, phone=_normalized_phone_or_new(orig.phone))
+
+
+def _crm_c_typo_first_name(cid: str, orig: Customer) -> Customer:
+    first_name = typo_name(orig.first_name) if orig.first_name else fake.first_name()
+    return Customer(id=cid, first_name=first_name, last_name=orig.last_name,
+                    email=orig.email, phone=generate_phone('full'))
+
+
+_CRM_C_FROM_A = (_crm_c_same_email, _crm_c_upper_name_same_phone, _crm_c_typo_first_name)
+
+
+def _crm_c_unique_contact(dq_scenario: int) -> tuple[Optional[str], Optional[str]]:
+    """(email, phone) for a non-overlapping CRM C customer, with DQ violations."""
+    if dq_scenario == 0:
+        return 'no-reply@callcenter.internal', generate_phone('full')
+    if dq_scenario == 1:
+        return fake.email(), 'N/A'
+    if dq_scenario == 2:
+        return None, generate_phone('full')
+    email = fake.email()
+    return email, generate_phone(random.choice(['full', 'dashes', 'parens']))
 
 
 def generate_customers_crm_a(count: int) -> list[Customer]:
@@ -250,120 +248,15 @@ def generate_customers_crm_b(
     non_cortex_a = crm_a_customers[len(CORTEX_TEST_PAIRS):]
     overlap_customers = random.sample(non_cortex_a, min(remaining_overlap, len(non_cortex_a)))
 
-    scenario_idx = 0
     for i, orig in enumerate(overlap_customers):
-        scenario = scenario_idx % 8
-        scenario_idx += 1
-        
-        if scenario == 0:
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=fake.first_name(),
-                last_name=fake.last_name(),
-                email=orig.email,
-                phone=generate_phone('full')
-            ))
-        
-        elif scenario == 1:
-            normalized = ''.join(filter(str.isdigit, orig.phone))
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=fake.first_name(),
-                last_name=fake.last_name(),
-                email=fake.email(),
-                phone=f"+1{normalized[-10:]}" if len(normalized) >= 10 else generate_phone('full')
-            ))
-        
-        elif scenario == 2:
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=typo_name(orig.first_name) if orig.first_name else fake.first_name(),
-                last_name=typo_name(orig.last_name) if orig.last_name else fake.last_name(),
-                email=fake.email(),
-                phone=generate_phone('full')
-            ))
-        
-        elif scenario == 3:
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=fake.first_name(),
-                last_name=fake.last_name(),
-                email=orig.email,
-                phone=generate_phone('full')
-            ))
-        
-        elif scenario == 4:
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name='',
-                last_name=orig.last_name,
-                email=orig.email,
-                phone=generate_phone('full')
-            ))
-        
-        elif scenario == 5:
-            domain = orig.email.split('@')[1] if orig.email and '@' in orig.email else 'example.com'
-            new_email = f"{orig.first_name.lower()}.{orig.last_name.lower()}@{domain}" if orig.first_name and orig.last_name else fake.email()
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=orig.first_name,
-                last_name=orig.last_name,
-                email=new_email,
-                phone=generate_phone('short')
-            ))
-        
-        elif scenario == 6:
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=orig.first_name,
-                last_name=orig.last_name,
-                email=f"{fake.user_name()}@{random.choice(DISPOSABLE_DOMAINS)}",
-                phone=generate_phone('full')
-            ))
-        
-        elif scenario == 7:
-            customers.append(Customer(
-                id=f"B{cortex_offset + i + 1:06d}",
-                first_name=orig.first_name,
-                last_name=orig.last_name,
-                email=orig.email,
-                phone=random.choice(PLACEHOLDER_PHONES)
-            ))
-    
+        customers.append(_CRM_B_OVERLAP[i % 8](f"B{cortex_offset + i + 1:06d}", orig))
+
     unique_count = count - len(overlap_customers) - cortex_offset
     for i in range(unique_count):
         idx = cortex_offset + len(overlap_customers) + i + 1
-        
         first_name = fake.first_name()
         last_name = fake.last_name()
-        
-        dq_scenario = i % 10
-        if dq_scenario == 0:
-            email = 'invalid-email-format'
-            phone = generate_phone('full')
-        elif dq_scenario == 1:
-            email = f"{fake.user_name()}@{random.choice(DISPOSABLE_DOMAINS)}"
-            phone = generate_phone('full')
-        elif dq_scenario == 2:
-            first_name = ''
-            email = fake.email()
-            phone = generate_phone('full')
-        elif dq_scenario == 3:
-            email = fake.email()
-            phone = 'abc123'
-        elif dq_scenario == 4:
-            email = fake.email()
-            phone = random.choice(PLACEHOLDER_PHONES)
-        elif dq_scenario == 5:
-            email = None
-            phone = None
-        elif dq_scenario == 6:
-            email = f"{first_name.lower()}.{last_name.lower()}@company.com"
-            phone = generate_phone('full')
-        else:
-            email = fake.email()
-            phone = generate_phone('full')
-        
+        first_name, email, phone = _crm_b_unique_contact(i % 10, first_name, last_name)
         customers.append(Customer(
             id=f"B{idx:06d}",
             first_name=first_name if first_name else None,
@@ -371,8 +264,92 @@ def generate_customers_crm_b(
             email=email,
             phone=phone
         ))
-    
+
     return customers
+
+
+# --- CRM B overlap scenarios (index = position % 8) -------------------------
+
+def _crm_b_same_email(cid: str, orig: Customer) -> Customer:
+    """MATCH-D01: different person data, same email."""
+    first_name, last_name = fake.first_name(), fake.last_name()
+    return Customer(id=cid, first_name=first_name, last_name=last_name,
+                    email=orig.email, phone=generate_phone('full'))
+
+
+def _crm_b_same_phone(cid: str, orig: Customer) -> Customer:
+    """MATCH-D02: same phone, re-formatted."""
+    first_name, last_name, email = fake.first_name(), fake.last_name(), fake.email()
+    return Customer(id=cid, first_name=first_name, last_name=last_name,
+                    email=email, phone=_normalized_phone_or_new(orig.phone))
+
+
+def _crm_b_typo_names(cid: str, orig: Customer) -> Customer:
+    """MATCH-P01: similar names (typos)."""
+    first_name = typo_name(orig.first_name) if orig.first_name else fake.first_name()
+    last_name = typo_name(orig.last_name) if orig.last_name else fake.last_name()
+    email = fake.email()
+    return Customer(id=cid, first_name=first_name, last_name=last_name,
+                    email=email, phone=generate_phone('full'))
+
+
+def _crm_b_empty_first_name(cid: str, orig: Customer) -> Customer:
+    """Survivorship S2: empty first name falls back to the other source."""
+    return Customer(id=cid, first_name='', last_name=orig.last_name,
+                    email=orig.email, phone=generate_phone('full'))
+
+
+def _crm_b_short_phone(cid: str, orig: Customer) -> Customer:
+    """Survivorship S5: same name, name-based email, short phone."""
+    domain = orig.email.split('@')[1] if orig.email and '@' in orig.email else 'example.com'
+    if orig.first_name and orig.last_name:
+        new_email = f"{orig.first_name.lower()}.{orig.last_name.lower()}@{domain}"
+    else:
+        new_email = fake.email()
+    return Customer(id=cid, first_name=orig.first_name, last_name=orig.last_name,
+                    email=new_email, phone=generate_phone('short'))
+
+
+def _crm_b_disposable_email(cid: str, orig: Customer) -> Customer:
+    """DQ-002: disposable email domain."""
+    email = f"{fake.user_name()}@{random.choice(DISPOSABLE_DOMAINS)}"
+    return Customer(id=cid, first_name=orig.first_name, last_name=orig.last_name,
+                    email=email, phone=generate_phone('full'))
+
+
+def _crm_b_placeholder_phone(cid: str, orig: Customer) -> Customer:
+    """DQ-008: placeholder phone."""
+    return Customer(id=cid, first_name=orig.first_name, last_name=orig.last_name,
+                    email=orig.email, phone=random.choice(PLACEHOLDER_PHONES))
+
+
+_CRM_B_OVERLAP = (
+    _crm_b_same_email, _crm_b_same_phone, _crm_b_typo_names, _crm_b_same_email,
+    _crm_b_empty_first_name, _crm_b_short_phone, _crm_b_disposable_email, _crm_b_placeholder_phone,
+)
+
+
+def _crm_b_unique_contact(dq_scenario: int, first_name: str, last_name: str) -> tuple[str, Optional[str], Optional[str]]:
+    """(first_name, email, phone) for a non-overlapping CRM B customer, with DQ violations."""
+    if dq_scenario == 0:
+        return first_name, 'invalid-email-format', generate_phone('full')
+    if dq_scenario == 1:
+        email = f"{fake.user_name()}@{random.choice(DISPOSABLE_DOMAINS)}"
+        return first_name, email, generate_phone('full')
+    if dq_scenario == 2:
+        email = fake.email()
+        return '', email, generate_phone('full')
+    if dq_scenario == 3:
+        return first_name, fake.email(), 'abc123'
+    if dq_scenario == 4:
+        email = fake.email()
+        return first_name, email, random.choice(PLACEHOLDER_PHONES)
+    if dq_scenario == 5:
+        return first_name, None, None
+    if dq_scenario == 6:
+        return first_name, f"{first_name.lower()}.{last_name.lower()}@company.com", generate_phone('full')
+    email = fake.email()
+    return first_name, email, generate_phone('full')
 
 
 def generate_addresses_crm_c(
@@ -452,56 +429,30 @@ def generate_addresses_crm_b(
     addresses = []
     addr_id = 1
     
-    a_customer_addrs = {}
-    for addr in crm_a_addresses:
-        if addr.customer_id not in a_customer_addrs:
-            a_customer_addrs[addr.customer_id] = []
-        a_customer_addrs[addr.customer_id].append(addr)
-    
+    a_customer_addrs = _addresses_by_customer(crm_a_addresses)
+
     for cust in customers:
         num_addresses = random.choices([1, 2], weights=[0.7, 0.3])[0]
-        
-        match_idx = int(cust.id[1:]) - 1
-        if match_idx < len(crm_a_customers):
-            orig_cust_id = crm_a_customers[match_idx].id
-            if orig_cust_id in a_customer_addrs and random.random() < 0.5:
-                orig_addr = random.choice(a_customer_addrs[orig_cust_id])
-                
-                if random.random() < 0.3:
-                    street = orig_addr.street.replace('Street', 'St.').replace('Avenue', 'Ave.')
-                else:
-                    street = orig_addr.street
-                
-                addresses.append(Address(
-                    id=f"AB{addr_id:06d}",
-                    customer_id=cust.id,
-                    street=street,
-                    city=orig_addr.city,
-                    postal_code=orig_addr.postal_code,
-                    country=orig_addr.country
-                ))
-                addr_id += 1
-                num_addresses -= 1
-        
-        for _ in range(num_addresses):
-            addr_scenario = random.randint(0, 5)
-            
-            if addr_scenario == 0:
-                street = fake.street_address()[:3]
-                city = fake.city()
-                postal_code = fake.postcode()
-                country = 'US'
-            elif addr_scenario == 1:
-                street = fake.street_address()
-                city = None
-                postal_code = fake.postcode()
-                country = 'US'
+
+        orig_addr = _matching_crm_a_address(cust, crm_a_customers, a_customer_addrs)
+        if orig_addr is not None:
+            if random.random() < 0.3:
+                street = orig_addr.street.replace('Street', 'St.').replace('Avenue', 'Ave.')
             else:
-                street = fake.street_address()
-                city = fake.city()
-                postal_code = fake.postcode()
-                country = random.choice(['US', 'CA', 'UK', 'DE', 'FR'])
-            
+                street = orig_addr.street
+            addresses.append(Address(
+                id=f"AB{addr_id:06d}",
+                customer_id=cust.id,
+                street=street,
+                city=orig_addr.city,
+                postal_code=orig_addr.postal_code,
+                country=orig_addr.country
+            ))
+            addr_id += 1
+            num_addresses -= 1
+
+        for _ in range(num_addresses):
+            street, city, postal_code, country = _random_crm_b_address(random.randint(0, 5))
             addresses.append(Address(
                 id=f"AB{addr_id:06d}",
                 customer_id=cust.id,
@@ -511,8 +462,42 @@ def generate_addresses_crm_b(
                 country=country
             ))
             addr_id += 1
-    
+
     return addresses
+
+
+def _addresses_by_customer(addresses: list[Address]) -> dict[str, list[Address]]:
+    by_customer: dict[str, list[Address]] = {}
+    for addr in addresses:
+        by_customer.setdefault(addr.customer_id, []).append(addr)
+    return by_customer
+
+
+def _matching_crm_a_address(cust: Customer, crm_a_customers: list[Customer],
+                            a_customer_addrs: dict[str, list[Address]]) -> Optional[Address]:
+    """With 50% chance, reuse an address of the CRM A customer at the same position."""
+    match_idx = int(cust.id[1:]) - 1
+    if match_idx >= len(crm_a_customers):
+        return None
+    orig_cust_id = crm_a_customers[match_idx].id
+    if orig_cust_id in a_customer_addrs and random.random() < 0.5:
+        return random.choice(a_customer_addrs[orig_cust_id])
+    return None
+
+
+def _random_crm_b_address(addr_scenario: int) -> tuple[str, Optional[str], str, str]:
+    """(street, city, postal_code, country); scenarios 0/1 carry DQ violations."""
+    if addr_scenario == 0:
+        street = fake.street_address()[:3]
+        city = fake.city()
+        return street, city, fake.postcode(), 'US'
+    if addr_scenario == 1:
+        street = fake.street_address()
+        return street, None, fake.postcode(), 'US'
+    street = fake.street_address()
+    city = fake.city()
+    postal_code = fake.postcode()
+    return street, city, postal_code, random.choice(['US', 'CA', 'UK', 'DE', 'FR'])
 
 
 def write_customer_csv_a(customers: list[Customer], filepath: str):
@@ -656,8 +641,6 @@ def print_test_coverage_report(
 
 def generate_daily_updates_customers(
     base_customers: list[Customer],
-    source: str,
-    day_number: int,
     change_rate: float = 0.1
 ) -> list[Customer]:
     """
@@ -672,66 +655,50 @@ def generate_daily_updates_customers(
     updates = []
     num_changes = int(len(base_customers) * change_rate)
     customers_to_change = random.sample(base_customers, num_changes)
-    
+
     for i, cust in enumerate(customers_to_change):
-        scenario = i % 5
-        
-        if scenario == 0:
-            new_email = fake.email()
-            updates.append(Customer(
-                id=cust.id,
-                first_name=cust.first_name,
-                last_name=cust.last_name,
-                email=new_email,
-                phone=cust.phone
-            ))
-        
-        elif scenario == 1:
-            new_phone = generate_phone('full')
-            updates.append(Customer(
-                id=cust.id,
-                first_name=cust.first_name,
-                last_name=cust.last_name,
-                email=cust.email,
-                phone=new_phone
-            ))
-        
-        elif scenario == 2:
-            updates.append(Customer(
-                id=cust.id,
-                first_name=cust.first_name.upper() if cust.first_name else fake.first_name(),
-                last_name=cust.last_name.upper() if cust.last_name else fake.last_name(),
-                email=cust.email,
-                phone=cust.phone
-            ))
-        
-        elif scenario == 3:
-            new_email = f"{cust.first_name.lower()}.{cust.last_name.lower()}@newcompany.com" if cust.first_name and cust.last_name else fake.email()
-            new_phone = generate_phone('full')
-            updates.append(Customer(
-                id=cust.id,
-                first_name=cust.first_name,
-                last_name=cust.last_name,
-                email=new_email,
-                phone=new_phone
-            ))
-        
-        elif scenario == 4:
-            updates.append(Customer(
-                id=cust.id,
-                first_name=cust.first_name,
-                last_name=fake.last_name() if random.random() < 0.5 else cust.last_name,
-                email=cust.email,
-                phone=cust.phone
-            ))
-    
+        updates.append(_CUSTOMER_UPDATES[i % 5](cust))
+
     return updates
+
+
+# --- Daily customer update scenarios (index = position % 5) ------------------
+
+def _customer_with(cust: Customer, **changes) -> Customer:
+    return Customer(**{**vars(cust), **changes})
+
+
+def _update_email(cust: Customer) -> Customer:
+    return _customer_with(cust, email=fake.email())
+
+
+def _update_phone(cust: Customer) -> Customer:
+    return _customer_with(cust, phone=generate_phone('full'))
+
+
+def _update_name_case(cust: Customer) -> Customer:
+    first_name = cust.first_name.upper() if cust.first_name else fake.first_name()
+    last_name = cust.last_name.upper() if cust.last_name else fake.last_name()
+    return _customer_with(cust, first_name=first_name, last_name=last_name)
+
+
+def _update_job_change(cust: Customer) -> Customer:
+    if cust.first_name and cust.last_name:
+        new_email = f"{cust.first_name.lower()}.{cust.last_name.lower()}@newcompany.com"
+    else:
+        new_email = fake.email()
+    return _customer_with(cust, email=new_email, phone=generate_phone('full'))
+
+
+def _update_last_name(cust: Customer) -> Customer:
+    return _customer_with(cust, last_name=fake.last_name() if random.random() < 0.5 else cust.last_name)
+
+
+_CUSTOMER_UPDATES = (_update_email, _update_phone, _update_name_case, _update_job_change, _update_last_name)
 
 
 def generate_daily_updates_addresses(
     base_addresses: list[Address],
-    source: str,
-    day_number: int,
     change_rate: float = 0.15
 ) -> list[Address]:
     """
@@ -745,53 +712,42 @@ def generate_daily_updates_addresses(
     updates = []
     num_changes = int(len(base_addresses) * change_rate)
     addresses_to_change = random.sample(base_addresses, num_changes)
-    
+
     for i, addr in enumerate(addresses_to_change):
-        scenario = i % 4
-        
-        if scenario == 0:
-            updates.append(Address(
-                id=addr.id,
-                customer_id=addr.customer_id,
-                street=fake.street_address(),
-                city=fake.city(),
-                postal_code=fake.postcode(),
-                country=addr.country
-            ))
-        
-        elif scenario == 1:
-            corrected_street = addr.street.replace('St.', 'Street').replace('Ave.', 'Avenue') if addr.street else fake.street_address()
-            updates.append(Address(
-                id=addr.id,
-                customer_id=addr.customer_id,
-                street=corrected_street,
-                city=addr.city.upper() if addr.city else fake.city(),
-                postal_code=addr.postal_code,
-                country=addr.country
-            ))
-        
-        elif scenario == 2:
-            new_country = random.choice(['US', 'CA', 'UK', 'DE', 'FR', 'ES', 'IT'])
-            updates.append(Address(
-                id=addr.id,
-                customer_id=addr.customer_id,
-                street=addr.street,
-                city=addr.city,
-                postal_code=addr.postal_code,
-                country=new_country
-            ))
-        
-        elif scenario == 3:
-            updates.append(Address(
-                id=addr.id,
-                customer_id=addr.customer_id,
-                street=addr.street,
-                city=addr.city,
-                postal_code=fake.postcode(),
-                country=addr.country
-            ))
-    
+        updates.append(_ADDRESS_UPDATES[i % 4](addr))
+
     return updates
+
+
+# --- Daily address update scenarios (index = position % 4) -------------------
+
+def _address_with(addr: Address, **changes) -> Address:
+    return Address(**{**vars(addr), **changes})
+
+
+def _update_moved(addr: Address) -> Address:
+    street = fake.street_address()
+    city = fake.city()
+    return _address_with(addr, street=street, city=city, postal_code=fake.postcode())
+
+
+def _update_corrected(addr: Address) -> Address:
+    if addr.street:
+        street = addr.street.replace('St.', 'Street').replace('Ave.', 'Avenue')
+    else:
+        street = fake.street_address()
+    return _address_with(addr, street=street, city=addr.city.upper() if addr.city else fake.city())
+
+
+def _update_country(addr: Address) -> Address:
+    return _address_with(addr, country=random.choice(['US', 'CA', 'UK', 'DE', 'FR', 'ES', 'IT']))
+
+
+def _update_postcode(addr: Address) -> Address:
+    return _address_with(addr, postal_code=fake.postcode())
+
+
+_ADDRESS_UPDATES = (_update_moved, _update_corrected, _update_country, _update_postcode)
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +784,27 @@ def generate_all(scale: str = "small") -> tuple[list, list, list]:
     return customers_a, customers_b, customers_c
 
 
+def _out_dir(phase: str, system: str, kind: str) -> str:
+    return os.path.join(OUTPUT_DIR, phase, system, kind)
+
+
+def _out_file(phase: str, system: str, kind: str, date: str) -> str:
+    plural = 'customers' if kind == 'customer' else 'addresses'
+    return os.path.join(_out_dir(phase, system, kind), f'{date}_crm_{system.lower()}_{plural}.csv')
+
+
+def _write_daily_updates(sources: list, update_date: str) -> None:
+    """Generate and write one day of updates (all customer sources, then all address sources)."""
+    cust_updates = [(s, generate_daily_updates_customers(c, change_rate=0.01), w)
+                    for s, c, _, w, _ in sources]
+    addr_updates = [(s, generate_daily_updates_addresses(a, change_rate=0.015), w)
+                    for s, _, a, _, w in sources]
+    for kind, updates in (('customer', cust_updates), ('address', addr_updates)):
+        for system, rows, write in updates:
+            if rows:
+                write(rows, _out_file('update', system, kind, update_date))
+
+
 def main():
     print("Generating test data for MDM Showcase...")
     
@@ -856,62 +833,31 @@ def main():
     )
     crm_c_addresses = generate_addresses_crm_c(crm_c_customers, crm_a_addresses, crm_a_customers)
 
-    initial_a_cust_dir = os.path.join(OUTPUT_DIR, 'initial', 'A', 'customer')
-    initial_a_addr_dir = os.path.join(OUTPUT_DIR, 'initial', 'A', 'address')
-    initial_b_cust_dir = os.path.join(OUTPUT_DIR, 'initial', 'B', 'customer')
-    initial_b_addr_dir = os.path.join(OUTPUT_DIR, 'initial', 'B', 'address')
-    initial_c_cust_dir = os.path.join(OUTPUT_DIR, 'initial', 'C', 'customer')
-    initial_c_addr_dir = os.path.join(OUTPUT_DIR, 'initial', 'C', 'address')
-    update_a_cust_dir = os.path.join(OUTPUT_DIR, 'update', 'A', 'customer')
-    update_a_addr_dir = os.path.join(OUTPUT_DIR, 'update', 'A', 'address')
-    update_b_cust_dir = os.path.join(OUTPUT_DIR, 'update', 'B', 'customer')
-    update_b_addr_dir = os.path.join(OUTPUT_DIR, 'update', 'B', 'address')
-    update_c_cust_dir = os.path.join(OUTPUT_DIR, 'update', 'C', 'customer')
-    update_c_addr_dir = os.path.join(OUTPUT_DIR, 'update', 'C', 'address')
+    # (system, customers, addresses, customer writer, address writer)
+    sources = [
+        ('A', crm_a_customers, crm_a_addresses, write_customer_csv_a, write_address_csv_a),
+        ('B', crm_b_customers, crm_b_addresses, write_customer_csv_b, write_address_csv_b),
+        ('C', crm_c_customers, crm_c_addresses, write_customer_csv_c, write_address_csv_c),
+    ]
+    for phase in ('initial', 'update'):
+        for system, *_ in sources:
+            for kind in ('customer', 'address'):
+                os.makedirs(_out_dir(phase, system, kind), exist_ok=True)
 
-    for d in [initial_a_cust_dir, initial_a_addr_dir, initial_b_cust_dir, initial_b_addr_dir,
-              initial_c_cust_dir, initial_c_addr_dir,
-              update_a_cust_dir, update_a_addr_dir, update_b_cust_dir, update_b_addr_dir,
-              update_c_cust_dir, update_c_addr_dir]:
-        os.makedirs(d, exist_ok=True)
-    
     num_months = 1
     num_days = num_months * 30
     initial_date = (datetime.now(timezone.utc) - timedelta(days=num_days)).strftime('%Y-%m-%d')
-    
-    write_customer_csv_a(crm_a_customers, os.path.join(initial_a_cust_dir, f'{initial_date}_crm_a_customers.csv'))
-    write_customer_csv_b(crm_b_customers, os.path.join(initial_b_cust_dir, f'{initial_date}_crm_b_customers.csv'))
-    write_customer_csv_c(crm_c_customers, os.path.join(initial_c_cust_dir, f'{initial_date}_crm_c_customers.csv'))
-    write_address_csv_a(crm_a_addresses, os.path.join(initial_a_addr_dir, f'{initial_date}_crm_a_addresses.csv'))
-    write_address_csv_b(crm_b_addresses, os.path.join(initial_b_addr_dir, f'{initial_date}_crm_b_addresses.csv'))
-    write_address_csv_c(crm_c_addresses, os.path.join(initial_c_addr_dir, f'{initial_date}_crm_c_addresses.csv'))
-    
+
+    for system, customers, addresses, write_cust, write_addr in sources:
+        write_cust(customers, _out_file('initial', system, 'customer', initial_date))
+        write_addr(addresses, _out_file('initial', system, 'address', initial_date))
+
     print(f"Initial load: {initial_date}")
     print(f"Generating {num_days} days of updates...")
-    
+
     for day in range(1, num_days + 1):
         update_date = (datetime.now(timezone.utc) - timedelta(days=num_days) + timedelta(days=day)).strftime('%Y-%m-%d')
-        
-        updates_a_cust = generate_daily_updates_customers(crm_a_customers, 'A', day, change_rate=0.01)
-        updates_b_cust = generate_daily_updates_customers(crm_b_customers, 'B', day, change_rate=0.01)
-        updates_c_cust = generate_daily_updates_customers(crm_c_customers, 'C', day, change_rate=0.01)
-        updates_a_addr = generate_daily_updates_addresses(crm_a_addresses, 'A', day, change_rate=0.015)
-        updates_b_addr = generate_daily_updates_addresses(crm_b_addresses, 'B', day, change_rate=0.015)
-        updates_c_addr = generate_daily_updates_addresses(crm_c_addresses, 'C', day, change_rate=0.015)
-
-        if updates_a_cust:
-            write_customer_csv_a(updates_a_cust, os.path.join(update_a_cust_dir, f'{update_date}_crm_a_customers.csv'))
-        if updates_b_cust:
-            write_customer_csv_b(updates_b_cust, os.path.join(update_b_cust_dir, f'{update_date}_crm_b_customers.csv'))
-        if updates_c_cust:
-            write_customer_csv_c(updates_c_cust, os.path.join(update_c_cust_dir, f'{update_date}_crm_c_customers.csv'))
-        if updates_a_addr:
-            write_address_csv_a(updates_a_addr, os.path.join(update_a_addr_dir, f'{update_date}_crm_a_addresses.csv'))
-        if updates_b_addr:
-            write_address_csv_b(updates_b_addr, os.path.join(update_b_addr_dir, f'{update_date}_crm_b_addresses.csv'))
-        if updates_c_addr:
-            write_address_csv_c(updates_c_addr, os.path.join(update_c_addr_dir, f'{update_date}_crm_c_addresses.csv'))
-        
+        _write_daily_updates(sources, update_date)
         if day % 30 == 0:
             print(f"  Month {day // 30}: {update_date}")
     
@@ -924,21 +870,12 @@ def main():
     print(f"                  {initial_date}_*.csv")
     print(f"Daily updates:    {os.path.join(OUTPUT_DIR, 'update')}/")
     print(f"                  {num_days} days ({num_months} months) of incremental changes")
-    print(f"                  - ~1% customer changes per day")
-    print(f"                  - ~1.5% address changes per day")
-    print(f"\nDirectory structure:")
-    print(f"  output/initial/A/customer/")
-    print(f"  output/initial/A/address/")
-    print(f"  output/initial/B/customer/")
-    print(f"  output/initial/B/address/")
-    print(f"  output/update/A/customer/")
-    print(f"  output/update/A/address/")
-    print(f"  output/update/B/customer/")
-    print(f"  output/update/B/address/")
-    print(f"  output/initial/C/customer/")
-    print(f"  output/initial/C/address/")
-    print(f"  output/update/C/customer/")
-    print(f"  output/update/C/address/")
+    print("                  - ~1% customer changes per day")
+    print("                  - ~1.5% address changes per day")
+    print("\nDirectory structure:")
+    for phase, system in [(p, s) for p in ('initial', 'update') for s in 'AB'] + [('initial', 'C'), ('update', 'C')]:
+        for kind in ('customer', 'address'):
+            print(f"  output/{phase}/{system}/{kind}/")
     print("-"*70 + "\n")
 
 

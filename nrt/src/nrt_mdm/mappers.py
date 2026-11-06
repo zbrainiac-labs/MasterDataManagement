@@ -49,7 +49,7 @@ def _email_domain(email: str | None) -> str | None:
 def _phone_suffix(phone: str | None, n: int) -> str | None:
     """Extract last n digits from phone. Returns None if insufficient digits."""
     if phone:
-        digits = re.sub(r"[^0-9]", "", phone)
+        digits = re.sub(r"\D", "", phone, flags=re.ASCII)
         return digits[-n:] if len(digits) >= n else None
     return None
 

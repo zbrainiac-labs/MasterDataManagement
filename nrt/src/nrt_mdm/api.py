@@ -62,8 +62,13 @@ app = FastAPI(
 
 VALID_SOURCES = {"crm_a", "crm_b", "crm_c"}
 
+RESP_404 = {404: {"description": "Customer not found"}}
 
-@app.post("/api/v1/ingest/{source_system}")
+
+@app.post("/api/v1/ingest/{source_system}", responses={
+    400: {"description": "Invalid source_system"},
+    500: {"description": "Pipeline error"},
+})
 def ingest(source_system: str, payload: dict):
     """Ingest a customer event and return the CDC result synchronously.
 
@@ -89,7 +94,7 @@ def ingest(source_system: str, payload: dict):
     except Exception as e:
         _pg_conn.rollback()
         logger.exception("Error processing event")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     return result
 
@@ -98,7 +103,7 @@ def ingest(source_system: str, payload: dict):
 # Read endpoints (GET)
 # ---------------------------------------------------------------------------
 
-@app.get("/api/v1/customers/{customer_id}")
+@app.get("/api/v1/customers/{customer_id}", responses=RESP_404)
 def get_customer(customer_id: int):
     """Get the current golden record for a customer."""
     with _pg_conn.cursor() as cur:
@@ -126,7 +131,7 @@ def get_customer(customer_id: int):
     }
 
 
-@app.get("/api/v1/customers/{customer_id}/sources")
+@app.get("/api/v1/customers/{customer_id}/sources", responses=RESP_404)
 def get_sources(customer_id: int):
     """Get all source records belonging to a customer's cluster."""
     with _pg_conn.cursor() as cur:
@@ -154,7 +159,7 @@ def get_sources(customer_id: int):
     ]
 
 
-@app.get("/api/v1/customers/{customer_id}/history")
+@app.get("/api/v1/customers/{customer_id}/history", responses=RESP_404)
 def get_history(customer_id: int):
     """Get SCD2 history for a customer."""
     with _pg_conn.cursor() as cur:
@@ -193,7 +198,10 @@ def health():
 # Admin endpoints (BIZ-15)
 # ---------------------------------------------------------------------------
 
-@app.post("/api/v1/admin/unmatch")
+@app.post("/api/v1/admin/unmatch", responses={
+    400: {"description": "Missing fields or invalid split"},
+    500: {"description": "Unmatch error"},
+})
 def admin_unmatch(request: dict):
     """Split records out of a cluster (BIZ-15: Cluster Split / Unmatch).
 
@@ -224,11 +232,11 @@ def admin_unmatch(request: dict):
         )
     except ValueError as e:
         _pg_conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _pg_conn.rollback()
         logger.exception("Error in unmatch")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     return result
 

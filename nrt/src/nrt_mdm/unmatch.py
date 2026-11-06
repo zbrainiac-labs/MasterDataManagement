@@ -70,25 +70,8 @@ def unmatch_records(
     Returns:
         dict with results: original_cluster, new_cluster, split_records, suppressions_created
     """
-    # 1. Get all members of the cluster
-    with pg_conn.cursor() as cur:
-        cur.execute(GET_CLUSTER_MEMBERS_SQL, {"cluster_id": cluster_id})
-        all_members = [(row[0], row[1]) for row in cur.fetchall()]
-
-    if not all_members:
-        raise ValueError(f"Cluster {cluster_id} not found or empty")
-
-    # 2. Validate split records exist in the cluster
-    split_set = {(r["source_system"], r["source_key"]) for r in records_to_split}
-    member_set = set(all_members)
-
-    missing = split_set - member_set
-    if missing:
-        raise ValueError(f"Records not in cluster {cluster_id}: {missing}")
-
-    remaining_set = member_set - split_set
-    if not remaining_set:
-        raise ValueError(f"Cannot split ALL records out of cluster {cluster_id}. At least one must remain.")
+    # 1-2. Load cluster members and validate the split
+    split_set, remaining_set = _validate_split(pg_conn, cluster_id, records_to_split)
 
     # 3. Create new cluster_id
     with pg_conn.cursor() as cur:
@@ -112,36 +95,11 @@ def unmatch_records(
             cluster_cache.put(sys, key, new_cluster_id)
 
     # 5. Create suppressions (each split record x each remaining record)
-    suppressions_created = 0
-    with pg_conn.cursor() as cur:
-        for sys_split, key_split in split_set:
-            for sys_remain, key_remain in remaining_set:
-                # Normalize order (alphabetical) for consistent uniqueness
-                a = (sys_split, key_split)
-                b = (sys_remain, key_remain)
-                if a > b:
-                    a, b = b, a
-                cur.execute(INSERT_SUPPRESSION_SQL, {
-                    "sys_a": a[0], "key_a": a[1],
-                    "sys_b": b[0], "key_b": b[1],
-                    "reason": reason,
-                    "actor": actor,
-                })
-                suppressions_created += 1
+    suppressions_created = _create_suppressions(pg_conn, split_set, remaining_set, reason, actor)
 
-    # 6. Recompute golden for original cluster (fewer sources now)
-    golden_original = compute_golden(pg_conn, cluster_id)
-    if golden_original:
-        golden_original.dq_score = compute_dq_score(golden_original)
-        golden_original.row_hash = compute_row_hash(golden_original)
-        publish_golden_if_changed(producer, pg_conn, golden_original)
-
-    # 7. Recompute golden for new cluster
-    golden_new = compute_golden(pg_conn, new_cluster_id)
-    if golden_new:
-        golden_new.dq_score = compute_dq_score(golden_new)
-        golden_new.row_hash = compute_row_hash(golden_new)
-        publish_golden_if_changed(producer, pg_conn, golden_new)
+    # 6-7. Recompute golden for original cluster (fewer sources now) and new cluster
+    golden_original = _refresh_golden(pg_conn, producer, cluster_id)
+    golden_new = _refresh_golden(pg_conn, producer, new_cluster_id)
 
     # 8. Audit
     audit_rec = log_audit(
@@ -188,6 +146,54 @@ def unmatch_records(
     )
 
     return result
+
+
+def _validate_split(pg_conn, cluster_id: int, records_to_split: list[dict]) -> tuple[set, set]:
+    """Return (split_set, remaining_set); raise ValueError if the split is invalid."""
+    with pg_conn.cursor() as cur:
+        cur.execute(GET_CLUSTER_MEMBERS_SQL, {"cluster_id": cluster_id})
+        member_set = {(row[0], row[1]) for row in cur.fetchall()}
+
+    if not member_set:
+        raise ValueError(f"Cluster {cluster_id} not found or empty")
+
+    split_set = {(r["source_system"], r["source_key"]) for r in records_to_split}
+    missing = split_set - member_set
+    if missing:
+        raise ValueError(f"Records not in cluster {cluster_id}: {missing}")
+
+    remaining_set = member_set - split_set
+    if not remaining_set:
+        raise ValueError(f"Cannot split ALL records out of cluster {cluster_id}. At least one must remain.")
+    return split_set, remaining_set
+
+
+def _create_suppressions(pg_conn, split_set: set, remaining_set: set, reason: str, actor: str) -> int:
+    """Insert a suppression for every split x remaining pair; return the count."""
+    created = 0
+    with pg_conn.cursor() as cur:
+        for split in split_set:
+            for remain in remaining_set:
+                # Normalize order (alphabetical) for consistent uniqueness
+                a, b = sorted((split, remain))
+                cur.execute(INSERT_SUPPRESSION_SQL, {
+                    "sys_a": a[0], "key_a": a[1],
+                    "sys_b": b[0], "key_b": b[1],
+                    "reason": reason,
+                    "actor": actor,
+                })
+                created += 1
+    return created
+
+
+def _refresh_golden(pg_conn, producer, cluster_id: int):
+    """Recompute, score and publish the golden record of a cluster."""
+    golden = compute_golden(pg_conn, cluster_id)
+    if golden:
+        golden.dq_score = compute_dq_score(golden)
+        golden.row_hash = compute_row_hash(golden)
+        publish_golden_if_changed(producer, pg_conn, golden)
+    return golden
 
 
 def _golden_summary(golden) -> dict:

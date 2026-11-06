@@ -12,6 +12,66 @@ from nrt_mdm.models import SourceCustomer
 MATCH_THRESHOLD = 0.70
 
 
+def _has_full_name(r: SourceCustomer) -> bool:
+    return bool(r.canonical_first_name and r.last_name)
+
+
+def _email_exact(a: SourceCustomer, b: SourceCustomer) -> float:
+    # MATCH-D01: Email exact equality
+    return 1.0 if (a.email and b.email and a.email == b.email) else 0.0
+
+
+def _phone_last10(a: SourceCustomer, b: SourceCustomer) -> float:
+    # MATCH-D02: Phone last-10 digits equality
+    if not (a.phone and b.phone):
+        return 0.0
+    a_digits = a.phone.replace("+", "")
+    b_digits = b.phone.replace("+", "")
+    if len(a_digits) >= 10 and len(b_digits) >= 10 and a_digits[-10:] == b_digits[-10:]:
+        return 0.95
+    return 0.0
+
+
+def _canonical_name_exact(a: SourceCustomer, b: SourceCustomer) -> float:
+    # MATCH-C01: Canonical name exact (case-insensitive)
+    if (_has_full_name(a) and _has_full_name(b)
+            and a.canonical_first_name.lower() == b.canonical_first_name.lower()
+            and a.last_name.lower() == b.last_name.lower()):
+        return 0.80
+    return 0.0
+
+
+def _full_name_similarity(a: SourceCustomer, b: SourceCustomer) -> float:
+    # MATCH-P01: Full name Jaro-Winkler similarity
+    if not (_has_full_name(a) and _has_full_name(b)):
+        return 0.0
+    jw = jellyfish.jaro_winkler_similarity(
+        f"{a.canonical_first_name} {a.last_name}", f"{b.canonical_first_name} {b.last_name}"
+    )
+    return jw * 0.30 if jw >= 0.85 else 0.0
+
+
+def _soundex_equal(a: SourceCustomer, b: SourceCustomer) -> float:
+    # MATCH-P03: Last name SOUNDEX equality
+    return 0.20 if (a.block_soundex and b.block_soundex and a.block_soundex == b.block_soundex) else 0.0
+
+
+def _email_domain_and_first_name(a: SourceCustomer, b: SourceCustomer) -> float:
+    # MATCH-P04: Email domain match + first name JW >= 0.90
+    if not (a.email and b.email and "@" in a.email and "@" in b.email):
+        return 0.0
+    if a.email[a.email.index("@"):] != b.email[b.email.index("@"):]:
+        return 0.0
+    if not (a.canonical_first_name and b.canonical_first_name):
+        return 0.0
+    fn_jw = jellyfish.jaro_winkler_similarity(a.canonical_first_name.lower(), b.canonical_first_name.lower())
+    return 0.15 if fn_jw >= 0.90 else 0.0
+
+
+DETERMINISTIC_RULES = (_email_exact, _phone_last10, _canonical_name_exact)
+PROBABILISTIC_RULES = (_full_name_similarity, _soundex_equal, _email_domain_and_first_name)
+
+
 def compute_match_score(a: SourceCustomer, b: SourceCustomer) -> float:
     """Compute combined match score between two source records.
 
@@ -19,60 +79,8 @@ def compute_match_score(a: SourceCustomer, b: SourceCustomer) -> float:
 
     Returns a float score. If >= MATCH_THRESHOLD, records should be merged.
     """
-    # --- Deterministic rules (take the MAX) ---
-
-    # MATCH-D01: Email exact equality
-    email_match = 1.0 if (a.email and b.email and a.email == b.email) else 0.0
-
-    # MATCH-D02: Phone last-10 digits equality
-    phone_match = 0.0
-    if a.phone and b.phone:
-        a_digits = a.phone.replace("+", "")
-        b_digits = b.phone.replace("+", "")
-        if len(a_digits) >= 10 and len(b_digits) >= 10 and a_digits[-10:] == b_digits[-10:]:
-            phone_match = 0.95
-
-    # MATCH-C01: Canonical name exact (case-insensitive)
-    canonical_exact = 0.0
-    if (a.canonical_first_name and b.canonical_first_name
-            and a.last_name and b.last_name
-            and a.canonical_first_name.lower() == b.canonical_first_name.lower()
-            and a.last_name.lower() == b.last_name.lower()):
-        canonical_exact = 0.80
-
-    # --- Probabilistic rules (SUM all that fire) ---
-
-    # MATCH-P01: Full name Jaro-Winkler similarity
-    name_sim = 0.0
-    if a.canonical_first_name and b.canonical_first_name and a.last_name and b.last_name:
-        full_a = f"{a.canonical_first_name} {a.last_name}"
-        full_b = f"{b.canonical_first_name} {b.last_name}"
-        jw = jellyfish.jaro_winkler_similarity(full_a, full_b)
-        if jw >= 0.85:
-            name_sim = jw * 0.30
-
-    # MATCH-P03: Last name SOUNDEX equality
-    soundex_match = 0.0
-    if (a.block_soundex and b.block_soundex and a.block_soundex == b.block_soundex):
-        soundex_match = 0.20
-
-    # MATCH-P04: Email domain match + first name JW >= 0.90
-    email_domain_name = 0.0
-    if a.email and b.email and "@" in a.email and "@" in b.email:
-        a_domain = a.email[a.email.index("@"):]
-        b_domain = b.email[b.email.index("@"):]
-        if a_domain == b_domain:
-            if a.canonical_first_name and b.canonical_first_name:
-                fn_jw = jellyfish.jaro_winkler_similarity(
-                    a.canonical_first_name.lower(), b.canonical_first_name.lower()
-                )
-                if fn_jw >= 0.90:
-                    email_domain_name = 0.15
-
-    # --- Final score ---
-    deterministic_max = max(email_match, phone_match, canonical_exact)
-    probabilistic_sum = name_sim + soundex_match + email_domain_name
-
+    deterministic_max = max(rule(a, b) for rule in DETERMINISTIC_RULES)
+    probabilistic_sum = sum(rule(a, b) for rule in PROBABILISTIC_RULES)
     return deterministic_max + probabilistic_sum
 
 

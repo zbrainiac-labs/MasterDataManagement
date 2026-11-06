@@ -9,6 +9,14 @@ import streamlit as st
 
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "postgresql://mdm:mdm@localhost:5432/mdm")
 
+
+def _truncate_detail(value, limit: int = 80) -> str:
+    """Render an audit detail cell, truncated to ``limit`` characters."""
+    if not value:
+        return ""
+    text = str(value)
+    return text[:limit] + "..." if len(text) > limit else text
+
 st.set_page_config(page_title="MDM Audit Log", page_icon="📋", layout="wide")
 st.title("MDM Audit Log")
 
@@ -113,9 +121,7 @@ else:
     display_df = df.copy()
     display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%H:%M:%S.%f").str[:-3]
     display_df["event_id"] = display_df["event_id"].astype(str).str[:8] + "..."
-    display_df["detail"] = display_df["detail"].apply(
-        lambda x: str(x)[:80] + "..." if x and len(str(x)) > 80 else str(x) if x else ""
-    )
+    display_df["detail"] = display_df["detail"].apply(_truncate_detail)
 
     st.dataframe(display_df, width=2000, height=500)
 

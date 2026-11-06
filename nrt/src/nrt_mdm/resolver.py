@@ -88,6 +88,19 @@ def _rows_to_candidates(rows) -> list[SourceCustomer]:
     ) for r in rows]
 
 
+def _add_unique(cur, sql: str, params: dict, seen: set, candidates: list, cap: int | None = None) -> None:
+    """Run one blocking tier and append unseen candidates (stop at ``cap``)."""
+    cur.execute(sql, params)
+    for c in _rows_to_candidates(cur.fetchall()):
+        key = (c.source_system, c.source_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(c)
+        if cap is not None and len(candidates) >= cap:
+            return
+
+
 def find_candidates(conn, record: SourceCustomer) -> list[SourceCustomer]:
     """Find potential matches using tiered blocking with LIMIT.
 
@@ -108,32 +121,15 @@ def find_candidates(conn, record: SourceCustomer) -> list[SourceCustomer]:
     with conn.cursor() as cur:
         # Tier 1: Email domain (most precise, smallest blocks)
         if record.block_email_domain:
-            cur.execute(FIND_BY_EMAIL_DOMAIN_SQL, params)
-            for c in _rows_to_candidates(cur.fetchall()):
-                key = (c.source_system, c.source_key)
-                if key not in seen:
-                    seen.add(key)
-                    candidates.append(c)
+            _add_unique(cur, FIND_BY_EMAIL_DOMAIN_SQL, params, seen, candidates)
 
         # Tier 2: Phone suffix
         if record.block_phone_suffix:
-            cur.execute(FIND_BY_PHONE_SUFFIX_SQL, params)
-            for c in _rows_to_candidates(cur.fetchall()):
-                key = (c.source_system, c.source_key)
-                if key not in seen:
-                    seen.add(key)
-                    candidates.append(c)
+            _add_unique(cur, FIND_BY_PHONE_SUFFIX_SQL, params, seen, candidates)
 
-        # Tier 3: SOUNDEX (least precise, largest blocks)
+        # Tier 3: SOUNDEX (least precise, largest blocks); hard cap at 100 total candidates
         if record.block_soundex and len(candidates) < CANDIDATE_LIMIT:
-            cur.execute(FIND_BY_SOUNDEX_SQL, params)
-            for c in _rows_to_candidates(cur.fetchall()):
-                key = (c.source_system, c.source_key)
-                if key not in seen:
-                    seen.add(key)
-                    candidates.append(c)
-                    if len(candidates) >= CANDIDATE_LIMIT * 2:
-                        break  # hard cap at 100 total candidates
+            _add_unique(cur, FIND_BY_SOUNDEX_SQL, params, seen, candidates, cap=CANDIDATE_LIMIT * 2)
 
     return candidates
 
@@ -160,7 +156,8 @@ class ClusterCache:
 
     def invalidate_cluster(self, old_cluster_id: int, new_cluster_id: int) -> None:
         """Update all entries pointing to old_cluster_id to new_cluster_id."""
-        for key, cid in list(self._cache.items()):
+        # values are reassigned in place; the key set does not change during iteration
+        for key, cid in self._cache.items():
             if cid == old_cluster_id:
                 self._cache[key] = new_cluster_id
 

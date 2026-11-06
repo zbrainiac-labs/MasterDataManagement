@@ -49,7 +49,7 @@ def _is_valid_phone(val: str | None) -> bool:
     if not val:
         return False
     import re
-    digits = re.sub(r"[^0-9]", "", val)
+    digits = re.sub(r"\D", "", val, flags=re.ASCII)
     return len(digits) >= 7
 
 

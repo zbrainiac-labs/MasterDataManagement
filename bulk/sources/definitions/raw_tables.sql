@@ -1,6 +1,6 @@
--- =============================================================================
--- raw_tables.sql — Append-only RAW tables for customer and address ingestion
--- =============================================================================
+/*
+ * raw_tables.sql — Append-only RAW tables for customer and address ingestion
+ */
 
 DEFINE TABLE {{db}}.{{raw_schema}}.CRMI_RAW_TB_CUSTOMER_A (
     SRC_CUSTOMER_ID VARCHAR(50) NOT NULL COMMENT 'Original customer identifier from CRM A system',

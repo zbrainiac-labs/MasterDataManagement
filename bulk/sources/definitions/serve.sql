@@ -1,6 +1,6 @@
--- =============================================================================
--- serve.sql — Customer 360 presentation views (AI and Fuzzy pipelines)
--- =============================================================================
+/*
+ * serve.sql — Customer 360 presentation views (AI and Fuzzy pipelines)
+ */
 
 DEFINE VIEW {{db}}.{{srv_schema}}.CRMS_AGG_VW_CUSTOMER_360_AI
     COMMENT = 'Complete customer profile with addresses as nested JSON. AI pipeline.'

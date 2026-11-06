@@ -266,41 +266,37 @@ with tab_search:
 
             st.divider()
             detail_col1, detail_col2 = st.columns(2)
-            with detail_col1:
-                with st.container(border=True):
-                    st.subheader(f":bust_in_silhouette: {cust['FULL_NAME']}")
-                    st.write(f"**Email:** {cust['EMAIL']}")
-                    st.write(f"**Phone:** {cust['PHONE']}")
-                    st.write(f"**DQ Score:** {cust['DQ_SCORE']} ({cust['DQ_TIER']})")
-                    st.write(f"**Sources:** {cust['SOURCE_COUNT']}")
-            with detail_col2:
-                with st.container(border=True):
-                    st.subheader(":round_pushpin: Addresses")
-                    if len(addr) > 0:
-                        for _, a in addr.iterrows():
-                            primary_tag = " :star:" if a["IS_PRIMARY"] else ""
-                            st.write(f"**{a['ADDRESS_TYPE']}**{primary_tag}")
-                            st.write(f"{a['STREET']}")
-                            st.write(f"{a['CITY']}, {a['POSTAL_CODE']}, {a['COUNTRY']}")
-                            st.write("---")
-                    else:
-                        st.write("No address on file")
+            with detail_col1, st.container(border=True):
+                st.subheader(f":bust_in_silhouette: {cust['FULL_NAME']}")
+                st.write(f"**Email:** {cust['EMAIL']}")
+                st.write(f"**Phone:** {cust['PHONE']}")
+                st.write(f"**DQ Score:** {cust['DQ_SCORE']} ({cust['DQ_TIER']})")
+                st.write(f"**Sources:** {cust['SOURCE_COUNT']}")
+            with detail_col2, st.container(border=True):
+                st.subheader(":round_pushpin: Addresses")
+                if len(addr) > 0:
+                    for _, a in addr.iterrows():
+                        primary_tag = " :star:" if a["IS_PRIMARY"] else ""
+                        st.write(f"**{a['ADDRESS_TYPE']}**{primary_tag}")
+                        st.write(f"{a['STREET']}")
+                        st.write(f"{a['CITY']}, {a['POSTAL_CODE']}, {a['COUNTRY']}")
+                        st.write("---")
+                else:
+                    st.write("No address on file")
 
             xref_col1, xref_col2 = st.columns(2)
-            with xref_col1:
-                with st.container(border=True):
-                    st.subheader(":link: Customer XREF")
-                    if len(c_xref):
-                        st.dataframe(c_xref, hide_index=True, width="stretch")
-                    else:
-                        st.write("No customer XREF records")
-            with xref_col2:
-                with st.container(border=True):
-                    st.subheader(":link: Address XREF")
-                    if len(a_xref):
-                        st.dataframe(a_xref, hide_index=True, width="stretch")
-                    else:
-                        st.write("No address XREF records")
+            with xref_col1, st.container(border=True):
+                st.subheader(":link: Customer XREF")
+                if len(c_xref):
+                    st.dataframe(c_xref, hide_index=True, width="stretch")
+                else:
+                    st.write("No customer XREF records")
+            with xref_col2, st.container(border=True):
+                st.subheader(":link: Address XREF")
+                if len(a_xref):
+                    st.dataframe(a_xref, hide_index=True, width="stretch")
+                else:
+                    st.write("No address XREF records")
 
 # --- DATA QUALITY ---
 with tab_dq:

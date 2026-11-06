@@ -1,3 +1,8 @@
+/*
+ * pre_deploy.sql — Containers DCM cannot define for itself
+ * (database, schemas, DCM project). Run before: snow dcm plan/deploy
+ */
+
 CREATE DATABASE IF NOT EXISTS {{ db }}
     COMMENT = 'Central repository for unified customer and address master data';
 

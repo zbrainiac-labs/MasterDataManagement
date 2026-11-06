@@ -14,7 +14,6 @@ Usage:
 import argparse
 import logging
 import os
-import sys
 import time
 from collections import defaultdict
 
@@ -27,9 +26,12 @@ from nrt_mdm.matching import compute_match_score, MATCH_THRESHOLD
 from nrt_mdm.models import SourceCustomer, GoldenCustomer
 from nrt_mdm.producer import publish_golden_if_changed, compute_row_hash
 from nrt_mdm.resolver import resolve
-from nrt_mdm.survivorship import compute_golden, _pick_best, _is_valid_name, _is_valid_email, _is_valid_phone, SOURCE_PRIORITY
+from nrt_mdm.survivorship import compute_golden, _pick_best, _is_valid_name, _is_valid_email, _is_valid_phone
 
 logger = logging.getLogger(__name__)
+
+LOG_FORMAT = "%(asctime)s %(levelname)s: %(message)s"
+DEFAULT_DSN = "postgresql://mdm:mdm@localhost:5432/mdm"
 
 FETCH_ALL_SOURCES_SQL = """
 SELECT source_system, source_key, first_name, last_name,
@@ -42,8 +44,20 @@ ORDER BY event_timestamp ASC
 
 RESET_CLUSTER_SQL = "TRUNCATE customer_clusters, golden_customers, customer_xref RESTART IDENTITY"
 
+INSERT_CLUSTER_SQL = "INSERT INTO customer_clusters (source_system, source_key, cluster_id) VALUES (%s, %s, %s)"
+INSERT_XREF_SQL = "INSERT INTO customer_xref (source_system, source_key, customer_id) VALUES (%s, %s, %s)"
+INSERT_GOLDEN_SQL = """
+    INSERT INTO golden_customers (cluster_id, first_name, last_name, email, phone,
+        dq_score, source_count, row_hash, valid_from, valid_to, is_current)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), '9999-12-31', TRUE)
+"""
+
 # Maximum block size — blocks larger than this are too generic for matching
 MAX_BLOCK_SIZE = 500
+
+# Bulk insert batch sizes
+LINK_BATCH_SIZE = 5000
+GOLDEN_BATCH_SIZE = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +90,171 @@ class UnionFind:
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _row_to_record(row) -> SourceCustomer:
+    return SourceCustomer(
+        source_system=row[0], source_key=row[1],
+        first_name=row[2], last_name=row[3],
+        canonical_first_name=row[4], email=row[5], phone=row[6],
+        block_soundex=row[7], block_email_domain=row[8],
+        block_phone_suffix=row[9], event_timestamp=row[10],
+    )
+
+
+def _connect(reset: bool):
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    conn = psycopg.connect(os.environ.get("POSTGRES_DSN", DEFAULT_DSN), autocommit=False)
+    if reset:
+        logger.info("Resetting clusters, golden records, and XREF...")
+        with conn.cursor() as cur:
+            cur.execute(RESET_CLUSTER_SQL)
+        conn.commit()
+    return conn
+
+
+def _fetch_all_rows(conn) -> list:
+    with conn.cursor() as cur:
+        cur.execute(FETCH_ALL_SOURCES_SQL)
+        return cur.fetchall()
+
+
+def _bulk_insert(cur, sql: str, rows, batch_size: int) -> None:
+    """executemany in fixed-size chunks."""
+    batch = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) >= batch_size:
+            cur.executemany(sql, batch)
+            batch.clear()
+    if batch:
+        cur.executemany(sql, batch)
+
+
+# ---------------------------------------------------------------------------
 # Fast batch resolve (in-memory)
 # ---------------------------------------------------------------------------
+
+def _build_blocks(records: list[SourceCustomer]) -> dict[tuple, list[int]]:
+    """Blocking index (soundex / email domain / phone suffix), oversized blocks dropped."""
+    logger.info("Building blocking index...")
+    blocks: dict[tuple, list[int]] = defaultdict(list)
+    for i, rec in enumerate(records):
+        for prefix, value in (("S", rec.block_soundex), ("E", rec.block_email_domain), ("P", rec.block_phone_suffix)):
+            if value:
+                blocks[(prefix, value)].append(i)
+
+    total_blocks = len(blocks)
+    blocks = {k: v for k, v in blocks.items() if len(v) <= MAX_BLOCK_SIZE}
+    skipped = total_blocks - len(blocks)
+    if skipped:
+        logger.info("Skipped %d oversized blocks (>%d members)", skipped, MAX_BLOCK_SIZE)
+    logger.info("Active blocks: %d", len(blocks))
+    return blocks
+
+
+def _resolve_block(records: list[SourceCustomer], members: list[int], uf: UnionFind) -> tuple[int, int]:
+    """Pairwise matching inside one block. Returns (comparisons, merges)."""
+    comparisons = merges = 0
+    for i, idx_a in enumerate(members):
+        for idx_b in members[i + 1:]:
+            # Skip if already in same cluster
+            if uf.find(idx_a) == uf.find(idx_b):
+                continue
+            comparisons += 1
+            if compute_match_score(records[idx_a], records[idx_b]) >= MATCH_THRESHOLD:
+                uf.union(idx_a, idx_b)
+                merges += 1
+    return comparisons, merges
+
+
+def _resolve_blocks(records: list[SourceCustomer], blocks: dict[tuple, list[int]]) -> UnionFind:
+    logger.info("Resolving matches within blocks...")
+    resolve_start = time.time()
+    uf = UnionFind(len(records))
+    comparisons = merges = 0
+
+    sorted_blocks = sorted(blocks.values(), key=len, reverse=True)
+    for blocks_processed, members in enumerate(sorted_blocks, start=1):
+        c, m = _resolve_block(records, members, uf)
+        comparisons += c
+        merges += m
+        if blocks_processed % 5000 == 0:
+            logger.info("  blocks: %d/%d  comparisons: %d  merges: %d  (%.1fs)",
+                        blocks_processed, len(blocks), comparisons, merges, time.time() - resolve_start)
+
+    logger.info("Resolution complete: %d comparisons, %d merges in %.1fs",
+                comparisons, merges, time.time() - resolve_start)
+    return uf
+
+
+def _assign_cluster_ids(uf: UnionFind, n: int) -> list[int]:
+    """Map each record to a dense 1-based cluster_id, in first-seen order."""
+    logger.info("Assigning cluster IDs...")
+    root_to_cluster: dict[int, int] = {}
+    record_clusters: list[int] = []
+    for i in range(n):
+        root = uf.find(i)
+        record_clusters.append(root_to_cluster.setdefault(root, len(root_to_cluster) + 1))
+    return record_clusters
+
+
+def _write_links(conn, records: list[SourceCustomer], record_clusters: list[int], num_clusters: int) -> None:
+    logger.info("Writing clusters and XREF to Postgres...")
+    write_start = time.time()
+    links = [(rec.source_system, rec.source_key, cid) for rec, cid in zip(records, record_clusters)]
+    with conn.cursor() as cur:
+        _bulk_insert(cur, INSERT_CLUSTER_SQL, links, LINK_BATCH_SIZE)
+        _bulk_insert(cur, INSERT_XREF_SQL, links, LINK_BATCH_SIZE)
+    conn.commit()
+
+    # Advance cluster_seq past the highest assigned cluster_id
+    with conn.cursor() as cur:
+        cur.execute("SELECT setval('cluster_seq', %s)", (num_clusters + 1,))
+    conn.commit()
+    logger.info("Clusters + XREF written in %.1fs", time.time() - write_start)
+
+
+def _golden_row(cid: int, members: list[SourceCustomer]) -> tuple:
+    """In-memory survivorship for one cluster -> golden_customers insert row."""
+    recs_data = [{
+        "source_system": r.source_system,
+        "first_name": r.first_name,
+        "last_name": r.last_name,
+        "email": r.email,
+        "phone": r.phone,
+        "event_timestamp": r.event_timestamp,
+    } for r in members]
+    # Sort by recency
+    recs_data.sort(key=lambda x: x["event_timestamp"], reverse=True)
+    source_count = len({r.source_system for r in members})
+
+    golden = GoldenCustomer(
+        cluster_id=cid,
+        first_name=_pick_best(recs_data, "first_name", _is_valid_name),
+        last_name=_pick_best(recs_data, "last_name", _is_valid_name),
+        email=_pick_best(recs_data, "email", _is_valid_email),
+        phone=_pick_best(recs_data, "phone", _is_valid_phone),
+        dq_score=0, source_count=source_count,
+    )
+    golden.dq_score = compute_dq_score(golden)
+    golden.row_hash = compute_row_hash(golden)
+    return (cid, golden.first_name, golden.last_name, golden.email, golden.phone,
+            golden.dq_score, source_count, golden.row_hash)
+
+
+def _write_golden(conn, records: list[SourceCustomer], record_clusters: list[int]) -> int:
+    # Group records by cluster for in-memory survivorship
+    cluster_members: dict[int, list[SourceCustomer]] = defaultdict(list)
+    for rec, cid in zip(records, record_clusters):
+        cluster_members[cid].append(rec)
+
+    rows = [_golden_row(cid, members) for cid, members in cluster_members.items()]
+    with conn.cursor() as cur:
+        _bulk_insert(cur, INSERT_GOLDEN_SQL, rows, GOLDEN_BATCH_SIZE)
+    return len(rows)
+
 
 def batch_resolve_fast(reset: bool = False):
     """Re-resolve all source records using in-memory blocking + Union-Find.
@@ -88,34 +265,12 @@ def batch_resolve_fast(reset: bool = False):
     - Resolves within each block using Union-Find
     - Writes results back to Postgres in bulk
     """
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
-
-    dsn = os.environ.get("POSTGRES_DSN", "postgresql://mdm:mdm@localhost:5432/mdm")
-    conn = psycopg.connect(dsn, autocommit=False)
-
-    if reset:
-        logger.info("Resetting clusters, golden records, and XREF...")
-        with conn.cursor() as cur:
-            cur.execute(RESET_CLUSTER_SQL)
-        conn.commit()
+    conn = _connect(reset)
 
     # --- Step 1: Load all source records into memory ---
     logger.info("Loading source records...")
     load_start = time.time()
-    with conn.cursor() as cur:
-        cur.execute(FETCH_ALL_SOURCES_SQL)
-        rows = cur.fetchall()
-
-    records: list[SourceCustomer] = []
-    for row in rows:
-        records.append(SourceCustomer(
-            source_system=row[0], source_key=row[1],
-            first_name=row[2], last_name=row[3],
-            canonical_first_name=row[4], email=row[5], phone=row[6],
-            block_soundex=row[7], block_email_domain=row[8],
-            block_phone_suffix=row[9], event_timestamp=row[10],
-        ))
-
+    records = [_row_to_record(row) for row in _fetch_all_rows(conn)]
     n = len(records)
     logger.info("Loaded %d records in %.1fs", n, time.time() - load_start)
 
@@ -124,183 +279,20 @@ def batch_resolve_fast(reset: bool = False):
         conn.close()
         return
 
-    # --- Step 2: Build blocking index ---
-    logger.info("Building blocking index...")
-    blocks: dict[tuple, list[int]] = defaultdict(list)
-    for i, rec in enumerate(records):
-        if rec.block_soundex:
-            blocks[("S", rec.block_soundex)].append(i)
-        if rec.block_email_domain:
-            blocks[("E", rec.block_email_domain)].append(i)
-        if rec.block_phone_suffix:
-            blocks[("P", rec.block_phone_suffix)].append(i)
-
-    # Filter out oversized blocks
-    total_blocks = len(blocks)
-    blocks = {k: v for k, v in blocks.items() if len(v) <= MAX_BLOCK_SIZE}
-    skipped = total_blocks - len(blocks)
-    if skipped:
-        logger.info("Skipped %d oversized blocks (>%d members)", skipped, MAX_BLOCK_SIZE)
-    logger.info("Active blocks: %d", len(blocks))
-
-    # --- Step 3: Resolve within blocks using Union-Find ---
-    logger.info("Resolving matches within blocks...")
-    resolve_start = time.time()
-    uf = UnionFind(n)
-    comparisons = 0
-    merges = 0
-
-    sorted_blocks = sorted(blocks.items(), key=lambda x: len(x[1]), reverse=True)
-    blocks_processed = 0
-
-    for block_key, members in sorted_blocks:
-        m = len(members)
-        for i in range(m):
-            for j in range(i + 1, m):
-                idx_a, idx_b = members[i], members[j]
-                # Skip if already in same cluster
-                if uf.find(idx_a) == uf.find(idx_b):
-                    continue
-                comparisons += 1
-                if compute_match_score(records[idx_a], records[idx_b]) >= MATCH_THRESHOLD:
-                    uf.union(idx_a, idx_b)
-                    merges += 1
-
-        blocks_processed += 1
-        if blocks_processed % 5000 == 0:
-            elapsed = time.time() - resolve_start
-            logger.info("  blocks: %d/%d  comparisons: %d  merges: %d  (%.1fs)",
-                        blocks_processed, len(blocks), comparisons, merges, elapsed)
-
-    resolve_elapsed = time.time() - resolve_start
-    logger.info("Resolution complete: %d comparisons, %d merges in %.1fs",
-                comparisons, merges, resolve_elapsed)
-
-    # --- Step 4: Assign cluster IDs ---
-    logger.info("Assigning cluster IDs...")
-    # Map root -> cluster_id
-    root_to_cluster: dict[int, int] = {}
-    cluster_id_seq = 0
-    record_clusters: list[int] = [0] * n
-
-    for i in range(n):
-        root = uf.find(i)
-        if root not in root_to_cluster:
-            cluster_id_seq += 1
-            root_to_cluster[root] = cluster_id_seq
-        record_clusters[i] = root_to_cluster[root]
-
-    num_clusters = len(root_to_cluster)
+    # --- Steps 2-4: Block, resolve, assign cluster IDs ---
+    uf = _resolve_blocks(records, _build_blocks(records))
+    record_clusters = _assign_cluster_ids(uf, n)
+    num_clusters = max(record_clusters)
     logger.info("Clusters: %d (from %d records, merge rate %.1f%%)",
                 num_clusters, n, (1 - num_clusters / n) * 100)
 
     # --- Step 5: Write clusters + XREF to Postgres (bulk) ---
-    logger.info("Writing clusters and XREF to Postgres...")
-    write_start = time.time()
-    with conn.cursor() as cur:
-        # Bulk insert clusters
-        batch = []
-        for i, rec in enumerate(records):
-            batch.append((rec.source_system, rec.source_key, record_clusters[i]))
-            if len(batch) >= 5000:
-                cur.executemany(
-                    "INSERT INTO customer_clusters (source_system, source_key, cluster_id) VALUES (%s, %s, %s)",
-                    batch
-                )
-                batch.clear()
-        if batch:
-            cur.executemany(
-                "INSERT INTO customer_clusters (source_system, source_key, cluster_id) VALUES (%s, %s, %s)",
-                batch
-            )
-
-        # Bulk insert XREF
-        batch = []
-        for i, rec in enumerate(records):
-            batch.append((rec.source_system, rec.source_key, record_clusters[i]))
-            if len(batch) >= 5000:
-                cur.executemany(
-                    "INSERT INTO customer_xref (source_system, source_key, customer_id) VALUES (%s, %s, %s)",
-                    batch
-                )
-                batch.clear()
-        if batch:
-            cur.executemany(
-                "INSERT INTO customer_xref (source_system, source_key, customer_id) VALUES (%s, %s, %s)",
-                batch
-            )
-
-    conn.commit()
-
-    # Advance cluster_seq past the highest assigned cluster_id
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT setval('cluster_seq', {num_clusters + 1})")
-    conn.commit()
-
-    logger.info("Clusters + XREF written in %.1fs", time.time() - write_start)
+    _write_links(conn, records, record_clusters, num_clusters)
 
     # --- Step 6: Compute golden records per cluster ---
     logger.info("Computing golden records for %d clusters...", num_clusters)
     golden_start = time.time()
-
-    # Group records by cluster for in-memory survivorship
-    cluster_members: dict[int, list[int]] = defaultdict(list)
-    for i in range(n):
-        cluster_members[record_clusters[i]].append(i)
-
-    golden_count = 0
-    with conn.cursor() as cur:
-        batch = []
-        for cid, member_indices in cluster_members.items():
-            # In-memory survivorship
-            recs_data = []
-            source_systems = set()
-            for idx in member_indices:
-                r = records[idx]
-                recs_data.append({
-                    "source_system": r.source_system,
-                    "first_name": r.first_name,
-                    "last_name": r.last_name,
-                    "email": r.email,
-                    "phone": r.phone,
-                    "event_timestamp": r.event_timestamp,
-                })
-                source_systems.add(r.source_system)
-
-            # Sort by recency
-            recs_data.sort(key=lambda x: x["event_timestamp"], reverse=True)
-
-            first_name = _pick_best(recs_data, "first_name", _is_valid_name)
-            last_name = _pick_best(recs_data, "last_name", _is_valid_name)
-            email = _pick_best(recs_data, "email", _is_valid_email)
-            phone = _pick_best(recs_data, "phone", _is_valid_phone)
-
-            golden = GoldenCustomer(
-                cluster_id=cid, first_name=first_name, last_name=last_name,
-                email=email, phone=phone, dq_score=0, source_count=len(source_systems),
-            )
-            golden.dq_score = compute_dq_score(golden)
-            golden.row_hash = compute_row_hash(golden)
-
-            batch.append((cid, first_name, last_name, email, phone,
-                          golden.dq_score, len(source_systems), golden.row_hash))
-            golden_count += 1
-
-            if len(batch) >= 1000:
-                cur.executemany("""
-                    INSERT INTO golden_customers (cluster_id, first_name, last_name, email, phone,
-                        dq_score, source_count, row_hash, valid_from, valid_to, is_current)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), '9999-12-31', TRUE)
-                """, batch)
-                batch.clear()
-
-        if batch:
-            cur.executemany("""
-                INSERT INTO golden_customers (cluster_id, first_name, last_name, email, phone,
-                    dq_score, source_count, row_hash, valid_from, valid_to, is_current)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), '9999-12-31', TRUE)
-            """, batch)
-
+    golden_count = _write_golden(conn, records, record_clusters)
     total_elapsed = time.time() - load_start
 
     # Audit record for batch operation
@@ -336,41 +328,21 @@ def batch_resolve_legacy(reset: bool = False):
 
     Slow for >10K records due to per-record SQL queries.
     """
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
-
-    dsn = os.environ.get("POSTGRES_DSN", "postgresql://mdm:mdm@localhost:5432/mdm")
-    conn = psycopg.connect(dsn, autocommit=False)
-
+    conn = _connect(reset)
     producer = Producer({
         "bootstrap.servers": os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
         "acks": "all",
         "enable.idempotence": True,
     })
 
-    if reset:
-        logger.info("Resetting clusters, golden records, and XREF...")
-        with conn.cursor() as cur:
-            cur.execute(RESET_CLUSTER_SQL)
-        conn.commit()
-
-    with conn.cursor() as cur:
-        cur.execute(FETCH_ALL_SOURCES_SQL)
-        rows = cur.fetchall()
-
+    rows = _fetch_all_rows(conn)
     logger.info("Re-resolving %d source records (legacy mode)...", len(rows))
     start = time.time()
     processed = 0
     clusters_affected: set[int] = set()
 
     for row in rows:
-        record = SourceCustomer(
-            source_system=row[0], source_key=row[1],
-            first_name=row[2], last_name=row[3],
-            canonical_first_name=row[4], email=row[5], phone=row[6],
-            block_soundex=row[7], block_email_domain=row[8],
-            block_phone_suffix=row[9], event_timestamp=row[10],
-        )
-        cluster_id, _ = resolve(conn, record)
+        cluster_id, _ = resolve(conn, _row_to_record(row))
         clusters_affected.add(cluster_id)
         processed += 1
         if processed % 100 == 0:

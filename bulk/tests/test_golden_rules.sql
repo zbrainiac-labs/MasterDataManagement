@@ -1,8 +1,8 @@
--- =============================================================================
--- test_golden_rules.sql
--- E2E validation of MDM golden records, DQ scoring, and SCD2 history
--- Tests both AI and FUZZY pipelines independently
--- =============================================================================
+/*
+ * test_golden_rules.sql
+ * E2E validation of MDM golden records, DQ scoring, and SCD2 history
+ * Tests both AI and FUZZY pipelines independently
+ */
 
 USE DATABASE MDM_DEV;
 USE SCHEMA MDM_AGG_v001;
@@ -49,7 +49,7 @@ SELECT 'AI: DQ score out of bounds' AS check_name,
     COUNT(*) AS violations,
     CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END AS result
 FROM CRMA_AGG_DT_CUSTOMER_AI
-WHERE dq_score < 0 OR dq_score > 100;
+WHERE NOT (dq_score BETWEEN 0 AND 100);
 
 -- =============================================================================
 -- TEST 4A: AI DQ RULE SPOT CHECKS
@@ -80,7 +80,7 @@ WHERE (email IS NULL OR NOT RLIKE(email, '^[A-Za-z0-9._%+\\055]+@[A-Za-z0-9.\\05
 SELECT source_count, COUNT(*) AS customers,
     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS pct
 FROM CRMA_AGG_DT_CUSTOMER_AI
-GROUP BY source_count ORDER BY source_count;
+GROUP BY source_count ORDER BY source_count ASC;
 
 -- =============================================================================
 -- TEST 6A: AI ADDRESS 1:1 CHECK
@@ -166,8 +166,8 @@ FROM CRMA_AGG_DT_CUSTOMER_AI;
 SELECT
     'AI: Serving view count matches golden' AS check_name,
     CASE WHEN c.cnt = s.cnt THEN 'PASS' ELSE 'FAIL: DT=' || c.cnt || ' SRV=' || s.cnt END AS result
-FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER_AI) c,
-     (SELECT COUNT(*) AS cnt FROM MDM_SRV_v001.CRMS_AGG_VW_CUSTOMER_360_AI) s;
+FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER_AI) c
+CROSS JOIN (SELECT COUNT(*) AS cnt FROM MDM_SRV_v001.CRMS_AGG_VW_CUSTOMER_360_AI) s;
 
 -- =============================================================================
 -- FUZZY PIPELINE TESTS
@@ -209,7 +209,7 @@ SELECT 'FUZZY: DQ score out of bounds' AS check_name,
     COUNT(*) AS violations,
     CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END AS result
 FROM CRMA_AGG_DT_CUSTOMER_FUZZY
-WHERE dq_score < 0 OR dq_score > 100;
+WHERE NOT (dq_score BETWEEN 0 AND 100);
 
 -- =============================================================================
 -- TEST 5B: FUZZY SOURCE COUNT DISTRIBUTION
@@ -218,7 +218,7 @@ WHERE dq_score < 0 OR dq_score > 100;
 SELECT source_count, COUNT(*) AS customers,
     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS pct
 FROM CRMA_AGG_DT_CUSTOMER_FUZZY
-GROUP BY source_count ORDER BY source_count;
+GROUP BY source_count ORDER BY source_count ASC;
 
 -- =============================================================================
 -- TEST 6B: FUZZY ADDRESS 1:1 CHECK
@@ -293,8 +293,8 @@ FROM CRMA_AGG_DT_CUSTOMER_FUZZY;
 SELECT
     'FUZZY: Serving view count matches golden' AS check_name,
     CASE WHEN c.cnt = s.cnt THEN 'PASS' ELSE 'FAIL: DT=' || c.cnt || ' SRV=' || s.cnt END AS result
-FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER_FUZZY) c,
-     (SELECT COUNT(*) AS cnt FROM MDM_SRV_v001.CRMS_AGG_VW_CUSTOMER_360_FUZZY) s;
+FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER_FUZZY) c
+CROSS JOIN (SELECT COUNT(*) AS cnt FROM MDM_SRV_v001.CRMS_AGG_VW_CUSTOMER_360_FUZZY) s;
 
 -- =============================================================================
 -- COMPARISON: AI vs FUZZY pipeline outcomes

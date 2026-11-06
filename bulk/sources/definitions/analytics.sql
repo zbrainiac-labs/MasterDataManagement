@@ -1,7 +1,7 @@
--- =============================================================================
--- analytics.sql — Full Dynamic Table chain for customer + address MDM pipeline
--- Two isolated implementations: AI (Cortex-powered) and FUZZY (classical matching)
--- =============================================================================
+/*
+ * analytics.sql — Full Dynamic Table chain for customer + address MDM pipeline
+ * Two isolated implementations: AI (Cortex-powered) and FUZZY (classical matching)
+ */
 
 -- =============================================================================
 -- AI PIPELINE — Uses Cortex AI for nickname resolution and fake name detection

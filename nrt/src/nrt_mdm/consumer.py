@@ -60,12 +60,12 @@ def process_message(msg, pg_conn, producer) -> None:
     # Parse payload
     try:
         payload = json.loads(msg.value())
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.error("Malformed JSON on topic %s: %s", topic, e)
+    except (json.JSONDecodeError, TypeError):
+        logger.exception("Malformed JSON on topic %s", topic)
         return
 
     # Extract event_timestamp from Kafka message timestamp
-    ts_type, ts_ms = msg.timestamp()
+    _, ts_ms = msg.timestamp()
     event_ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
 
     # Delegate to shared pipeline

@@ -1,6 +1,6 @@
--- =============================================================================
--- views.sql — Union views and XREF views
--- =============================================================================
+/*
+ * views.sql — Union views and XREF views
+ */
 
 DEFINE VIEW {{db}}.{{agg_schema}}.CRMA_AGG_VW_CUSTOMER_UNION
     COMMENT = 'Harmonizes customer data from 3 CRM systems into unified schema.'
