@@ -37,7 +37,7 @@ set -e
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="$BASE_DIR/../shared/output"
 DATABASE="MDM_DEV"
-SCHEMA="MDM_RAW_001"
+SCHEMA="MDM_RAW_V001"
 CONNECTION_NAME=""
 DRY_RUN=false
 INITIAL_ONLY=false
@@ -163,11 +163,7 @@ upload_to_stage() {
   fi
   
   # Build SQL command
-  local sql_command="
-    USE DATABASE $DATABASE;
-    USE SCHEMA $SCHEMA;
-    PUT file://$source_dir/*.csv @$stage_name AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-  "
+  local sql_command="PUT file://$source_dir/*.csv @$DATABASE.$SCHEMA.$stage_name AUTO_COMPRESS=FALSE OVERWRITE=TRUE;"
   
   set +e
   snow sql -c "$CONNECTION_NAME" -q "$sql_command" > /tmp/mdm_upload_output.txt 2>&1
@@ -276,15 +272,14 @@ if [[ "$DRY_RUN" != "true" && $SUCCESSFUL_UPLOADS -gt 0 ]]; then
   echo ""
   echo "Triggering directory table refresh for stream detection..."
   
+  RAW="$DATABASE.$SCHEMA"
   snow sql -c "$CONNECTION_NAME" -q "
-    USE DATABASE $DATABASE;
-    USE SCHEMA $SCHEMA;
-    ALTER STAGE CRMI_RAW_ST_CUSTOMER_A REFRESH;
-    ALTER STAGE CRMI_RAW_ST_CUSTOMER_B REFRESH;
-    ALTER STAGE CRMI_RAW_ST_CUSTOMER_C REFRESH;
-    ALTER STAGE CRMI_RAW_ST_ADDRESSES_A REFRESH;
-    ALTER STAGE CRMI_RAW_ST_ADDRESSES_B REFRESH;
-    ALTER STAGE CRMI_RAW_ST_ADDRESSES_C REFRESH;
+    ALTER STAGE $RAW.CRMI_RAW_ST_CUSTOMER_A REFRESH;
+    ALTER STAGE $RAW.CRMI_RAW_ST_CUSTOMER_B REFRESH;
+    ALTER STAGE $RAW.CRMI_RAW_ST_CUSTOMER_C REFRESH;
+    ALTER STAGE $RAW.CRMI_RAW_ST_ADDRESSES_A REFRESH;
+    ALTER STAGE $RAW.CRMI_RAW_ST_ADDRESSES_B REFRESH;
+    ALTER STAGE $RAW.CRMI_RAW_ST_ADDRESSES_C REFRESH;
   " > /dev/null 2>&1 || echo "  [WARN] Stage refresh may require additional permissions"
   
   echo "[OK] Stage metadata refreshed"

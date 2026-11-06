@@ -1,1 +1,0 @@
-bulk/post_deploy.sql
