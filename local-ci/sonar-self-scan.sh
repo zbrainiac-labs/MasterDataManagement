@@ -27,9 +27,10 @@ SCAN='
   WORK=$(mktemp -d)
   trap "rm -rf $WORK" EXIT
   python3 -m venv "$WORK/venv"
-  # faker is pinned: the generator snapshot test hashes seeded Faker output
+  # faker is pinned: the generator snapshot test hashes seeded Faker output;
+  # fastapi + httpx are only needed for the REST API tests (TestClient)
   "$WORK/venv/bin/pip" install -q --disable-pip-version-check \
-    pytest pytest-cov jellyfish faker==40.44.0 >/dev/null
+    pytest pytest-cov jellyfish faker==40.44.0 fastapi httpx >/dev/null
   # offline unit tests only (regression/e2e need Kafka, Postgres or Snowflake)
   PYTHONPATH="$SRC/nrt/src" PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE="$WORK/.coverage" \
     "$WORK/venv/bin/python" -m pytest -q -p no:cacheprovider \
