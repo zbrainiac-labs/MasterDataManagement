@@ -2,6 +2,7 @@
 out/
 output/
 .scannerwork/
+.sonar-issues.tsv
 __pycache__/
 *.pyc
 .venv/
