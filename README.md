@@ -38,21 +38,25 @@ Two implementations, same matching logic, same golden record output:
 ```
 MasterDataManagement/
 ├── bulk/                   Batch MDM on Snowflake (Dynamic Tables, DCM, hourly lag)
-│   ├── sources/            SQL definitions (DTs, views, serving layers)
+│   ├── sources/            SQL definitions (stages, file formats, streams, tasks, DTs, views)
 │   ├── sqlunit/            SQL unit tests
 │   ├── tests/              E2E validation & notebooks
 │   ├── app/                Streamlit dashboard
-│   ├── pre_deploy.sql      DCM pre-deploy hook
-│   └── post_deploy.sql     DCM post-deploy hook
+│   └── pre_deploy.sql      DCM pre-deploy hook (database, schemas, project)
 ├── nrt/                    Near-Real-Time MDM (Kafka + Postgres, sub-second)
 │   ├── src/nrt_mdm/        Python consumer, matching, survivorship, DQ
 │   ├── schema/             Postgres DDL
 │   ├── app/                Streamlit golden record viewer
 │   ├── tests/              Unit + E2E tests + load tests
 │   ├── docker-compose.yml  Local dev stack
-│   └── Dockerfile          MDM engine container
+│   ├── start.sh            Start/stop the local stack (up | down | reset | status | logs)
+│   └── Dockerfile          MDM engine container (non-root)
 ├── shared/                 Shared between bulk and NRT
-│   └── scripts/            Test data generator (1.5K to 1M records)
+│   ├── scripts/            Test data generator (1.5K to 1M records)
+│   └── tests/              Generator snapshot tests
+├── local-ci/               SonarQube + Trivy scan script (local and CI)
+├── .github/workflows/      CI (scan gate, multi-arch image build) + DCM deploy pipeline
+├── sonar-project.properties SonarQube scope and documented suppressions
 ├── manifest.yml            DCM project manifest (root for tooling compatibility)
 └── README.md               This file
 ```
@@ -82,13 +86,37 @@ cd nrt/tests
 ### Unit Tests
 
 ```bash
-cd nrt && pytest tests/ -v            # 154 tests: mappers, matching, survivorship, DQ, audit, regression, unmatch, interfaces
+cd nrt && pytest tests/ -v            # full suite incl. regression/interface tests (needs the running stack)
 ```
+
+The offline subset (no Kafka/Postgres; Kafka and Postgres are stubbed) runs in CI:
+
+```bash
+PYTHONPATH=nrt/src pytest nrt/tests/test_*.py shared/tests   # 122 tests: mappers, matching, DQ, survivorship,
+                                                            # resolver, batch resolve, unmatch, consumer, audit, generator
+```
+
+## Code Quality & CI
+
+```bash
+bash local-ci/sonar-self-scan.sh      # offline tests + Trivy + SonarQube quality gate (same as CI)
+```
+
+Requires the [DataOpsBackbone](https://github.com/zbrainiac-labs/DataOpsBackbone) stack (SonarQube) to be running.
+The scan fails on a failing test, a HIGH/CRITICAL Trivy finding, a failed quality gate, or any
+HIGH/BLOCKER/CRITICAL Sonar issue. `SKIP_TRIVY=1` skips the Trivy step.
+
+GitHub Actions (`.github/workflows/sonar.yml`):
+- **sonar** — runs the script above on the self-hosted DataOpsBackbone runners
+- **image** — builds `nrt/Dockerfile` natively for `linux/amd64` and `linux/arm64` and smoke-tests it (not pushed)
+
+The DCM deploy pipeline is `.github/workflows/update-local-repo.yml`.
 
 ### Streamlit Viewers
 
 ```bash
-docker compose up -d                  # starts all services
+bash nrt/start.sh                     # build + start all services, wait until healthy, print URLs
+                                      # also: down | reset (wipe Postgres) | status | logs [service]
 open http://localhost:8501             # golden record viewer (browse records, XREF, SCD2 history)
 open http://localhost:8502             # audit log viewer (SEC-04: live tail of audit events)
 ```
@@ -170,7 +198,7 @@ The near-real-time pipeline processes single Kafka events through entity resolut
 - **Threshold:** Combined score >= 0.70 to merge
 - **Golden record:** Survivorship (completeness > source priority > recency) + 11 DQ rules + SCD2 history
 - **CDC:** Golden record and XREF changes published to outbound Kafka topics
-- **Deployment:** `docker compose up -d` (local) / SPCS (production)
+- **Deployment:** `bash nrt/start.sh` (local, Docker Compose) / SPCS (production)
 
 For full details (requirements, architecture, processing guarantees), see [MDM_SPEC_Near-Real-Time.md](MDM_SPEC_Near-Real-Time.md).
 

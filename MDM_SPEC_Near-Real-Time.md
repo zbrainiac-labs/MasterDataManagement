@@ -139,8 +139,8 @@ All requirement status labels reference these phases. Phase 1 items are Done or 
 
 | ID | Title | Status |
 |----|-------|--------|
-| DEP-01 | CI/CD Pipeline (build, test, deploy) | Planned (Phase 2) |
-| DEP-02 | Container Image Registry & Vulnerability Scanning | Planned (Phase 2) |
+| DEP-01 | CI/CD Pipeline (build, test, deploy) | Partial (CI: tests, scan gate, multi-arch build) |
+| DEP-02 | Container Image Registry & Vulnerability Scanning | Partial (Trivy repo scan; no registry) |
 | DEP-03 | Zero-Downtime Deployment (blue/green or rolling) | Planned (Phase 2) |
 | DEP-04 | Rollback Strategy & Canary Releases | Planned (Phase 2) |
 | DEP-05 | Infrastructure-as-Code (reproducible environments) | Planned (Phase 2) |
@@ -777,7 +777,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 
 ### INF-08: HA: Kafka Multi-Broker Cluster
 
-**Status:** Planned (Phase 2)
+**Status:** Partial — CI implemented (unit tests, Trivy + SonarQube quality gate, multi-arch image build + smoke test in `.github/workflows/sonar.yml`); push, deploy and smoke test against a deployed environment are still Phase 2.
 
 **What:** Production Kafka deployment must tolerate broker failures without message loss or pipeline interruption. Applies to both inbound topics (CRM events) and outbound topics (CDC golden/xref).
 
@@ -1170,7 +1170,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 - **Trigger:** Push to `main` (deploy to staging) or git tag `v*` (deploy to production)
 - **Stages:**
   1. **Lint + Type Check** — ruff, mypy
-  2. **Unit Tests** — pytest (154 tests, <40s)
+  2. **Unit Tests** — pytest (offline subset, Kafka/Postgres stubbed; full suite needs the running stack)
   3. **Build Container Image** — multi-stage Dockerfile, tagged with git SHA + semver
   4. **Integration Test** — spin up Docker Compose, run `e2e_test.py --mode single --transport both`
   5. **Push Image** — to Snowflake Image Registry (SPCS) or ECR/GAR
