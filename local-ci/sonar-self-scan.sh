@@ -60,7 +60,7 @@ export KEY="${SONAR_PROJECT_KEY:-MasterDataManagement-local}"
 # Trivy (Aqua Security): dependency CVEs, Dockerfile/compose misconfig, secrets.
 # Fails on HIGH/CRITICAL, like the Sonar gate. SKIP_TRIVY=1 to skip.
 TRIVY_VERSION="${TRIVY_VERSION:-0.76.2}"
-TRIVY_ARGS=(fs --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 1
+TRIVY_ARGS=(fs --scanners "vuln,misconfig,secret" --severity "HIGH,CRITICAL" --exit-code 1
   --skip-dirs .venv --skip-dirs nrt/.venv --skip-dirs shared/output --no-progress .)
 
 trivy_scan() {

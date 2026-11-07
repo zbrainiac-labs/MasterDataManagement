@@ -777,7 +777,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 
 ### INF-08: HA: Kafka Multi-Broker Cluster
 
-**Status:** Partial — CI implemented (unit tests, Trivy + SonarQube quality gate, multi-arch image build + smoke test in `.github/workflows/sonar.yml`); push, deploy and smoke test against a deployed environment are still Phase 2.
+**Status:** Planned (Phase 2)
 
 **What:** Production Kafka deployment must tolerate broker failures without message loss or pipeline interruption. Applies to both inbound topics (CRM events) and outbound topics (CDC golden/xref).
 
@@ -1162,7 +1162,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 
 ### DEP-01: CI/CD Pipeline (build, test, deploy)
 
-**Status:** Planned (Phase 2)
+**Status:** Partial — `.github/workflows/ci.yml` implements lint (actionlint, shellcheck), offline unit tests + Trivy + SonarQube quality gate, the multi-arch image build with Trivy scan + smoke test, and on `main` the image push plus the DCM deploy of the bulk pipeline to `MDM_DEV`; deploy only runs when all checks are green. Integration test (Docker Compose E2E), deployment of the NRT containers and the post-deploy smoke test are still Phase 2.
 
 **What:** Automated pipeline from git push to running production containers. Every change is built, tested, and deployed without manual steps.
 
@@ -1185,7 +1185,7 @@ CDC:     golden UPDATE cluster=42 (source_count 3→2)
 
 ### DEP-02: Container Image Registry & Vulnerability Scanning
 
-**Status:** Planned (Phase 2)
+**Status:** Partial — images are pushed to `ghcr.io/zbrainiac-labs/mdm-nrt` (`sha-<short>`, `latest`; multi-arch amd64 + arm64) only after the Trivy HIGH/CRITICAL scan passed, with a CycloneDX SBOM and build-provenance attestation (`gh attestation verify`); Python dependencies are pinned in `nrt/requirements.txt`. Semver tags and automatic pruning are still Phase 2.
 
 **What:** All container images stored in a secure registry with automated vulnerability scanning before deployment.
 

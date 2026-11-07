@@ -98,19 +98,93 @@ PYTHONPATH=nrt/src pytest nrt/tests/test_*.py shared/tests   # 122 tests: mapper
 
 ## Code Quality & CI
 
-```bash
-bash local-ci/sonar-self-scan.sh      # offline tests + Trivy + SonarQube quality gate (same as CI)
+All three options need the [DataOpsBackbone](https://github.com/zbrainiac-labs/DataOpsBackbone) stack
+(SonarQube + self-hosted runners) running on Docker Desktop.
+
+### Which one to use
+
+| I want to… | Use | Touches Snowflake? |
+|---|---|---|
+| Check my code before committing (tests, Trivy, Sonar gate) | `bash local-ci/sonar-self-scan.sh` | No |
+| Run the whole CI / Deploy workflow locally before pushing (workflow or Dockerfile changes) | `bash local-ci/act.sh` | Dry run by default |
+| Run the official CI, deploy to DEV, publish the image and create a release | GitHub Actions (push / merge to `main`) | Yes |
+
+All three run the same code: `act.sh` and GitHub execute the same `.github/workflows/ci.yml`, and its
+`sonar` job runs `sonar-self-scan.sh`.
+
+```mermaid
+flowchart LR
+    lint["lint<br/>actionlint · shellcheck"] --> sonar["sonar<br/>sonar-self-scan.sh"]
+    lint --> image["nrt image<br/>amd64 + arm64<br/>Trivy · smoke test"]
+    sonar --> deploy["deploy<br/>DataOps pipeline<br/>DCM → MDM_DEV · release"]
+    image --> deploy
+    sonar --> publish["publish<br/>ghcr.io/zbrainiac-labs/mdm-nrt"]
+    image --> publish
 ```
 
-Requires the [DataOpsBackbone](https://github.com/zbrainiac-labs/DataOpsBackbone) stack (SonarQube) to be running.
-The scan fails on a failing test, a HIGH/CRITICAL Trivy finding, a failed quality gate, or any
-HIGH/BLOCKER/CRITICAL Sonar issue. `SKIP_TRIVY=1` skips the Trivy step.
+### 1. `local-ci/sonar-self-scan.sh` — the quality gate (daily use)
 
-GitHub Actions (`.github/workflows/sonar.yml`):
-- **sonar** — runs the script above on the self-hosted DataOpsBackbone runners
-- **image** — builds `nrt/Dockerfile` natively for `linux/amd64` and `linux/arm64` and smoke-tests it (not pushed)
+```bash
+bash local-ci/sonar-self-scan.sh      # offline tests + Trivy + SonarQube quality gate
+SKIP_TRIVY=1 bash local-ci/sonar-self-scan.sh
+```
 
-The DCM deploy pipeline is `.github/workflows/update-local-repo.yml`.
+The fast inner loop: no commit, no workflow, no Snowflake. Fails on a failing test, a HIGH/CRITICAL
+Trivy finding, a failed quality gate, or any HIGH/BLOCKER/CRITICAL Sonar issue (Sonar project
+`MasterDataManagement-local`); the issue list is written to `.sonar-issues.tsv`.
+A green local run means a green `sonar` job. It does not build the image and does not deploy.
+
+### 2. `local-ci/act.sh` — the full workflow locally
+
+Runs `ci.yml` with [act](https://github.com/nektos/act) on Docker Desktop against your working copy
+(uncommitted changes included): the same jobs, runner images, Sonar network and token as on GitHub.
+
+```bash
+bash local-ci/act.sh                 # lint, sonar, image amd64 + arm64, deploy as a dry run
+bash local-ci/act.sh --job=sonar     # a single job (lint | sonar | image | deploy)
+bash local-ci/act.sh --full          # deploy into a per-build clone schema (never MDM_DEV itself)
+```
+
+Differences from GitHub, all handled by `ci.yml` itself (`github.event.act`):
+
+| | GitHub (`main`) | `act.sh` |
+|---|---|---|
+| Deploy | DCM deploy to `MDM_DEV`, GitHub release | dry run (prepare + scan) · `--full`: clone schema, no release |
+| Snowflake auth | OIDC (`SVC_CICD`) | PAT from `SNOW_CONFIG_B64` or the DataOpsBackbone `.env` |
+| DataOps pipeline | `DataOpsBackbone@main` | your local `../DataOpsBackbone` checkout (`BACKBONE=…`) |
+| Image | pushed to GHCR + SBOM / provenance | built, scanned and smoke-tested only (amd64 via emulation) |
+| Build cache | GitHub Actions cache | none |
+
+Logs are written to `local-ci/logs/` (git-ignored) and checked for leaked tokens.
+
+> DataOpsBackbone's own `local-ci/run.sh --project=../MasterDataManagement` still works, but it runs
+> only the DataOps pipeline; `act.sh` runs this repo's complete workflow. Without `--project`, `run.sh`
+> runs DataOpsBackbone's sample consumer `../project-one`.
+
+### 3. GitHub Actions — the source of truth
+
+| Event | Jobs |
+|---|---|
+| Pull request | lint · sonar (Sonar project `MasterDataManagement-local-pr`, keeps `main`'s new-code baseline clean) · nrt image amd64 + arm64 |
+| Push / merge to `main`, manual run on `main` | all of the above, then **deploy** (DataOps pipeline: prepare → scan → DCM deploy to `MDM_DEV` → validate → release `v<run>`) and **publish** (multi-arch image) — only if every check is green |
+
+```bash
+gh workflow run ci.yml                       # run CI / Deploy manually on main
+gh run list --workflow=ci.yml --limit 5      # recent runs
+gh run watch                                 # follow the current run
+docker pull ghcr.io/zbrainiac-labs/mdm-nrt:latest          # needs `gh auth token | docker login ghcr.io -u <user> --password-stdin`
+gh attestation verify oci://ghcr.io/zbrainiac-labs/mdm-nrt:latest --owner zbrainiac-labs
+```
+
+The DataOps pipeline scans the SQL again with SQLFluff into the Sonar project `MasterDataManagement`;
+that is the deploy gate of the shared pipeline, separate from the code gate above.
+Dependabot keeps actions, the base image and the pinned Python dependencies (`nrt/requirements.txt`) current;
+regenerate that file after changing `nrt/pyproject.toml`:
+
+```bash
+docker run --rm -v "$PWD/nrt:/w" -w /w python:3.13-slim sh -c \
+  'pip install -q pip-tools && pip-compile -q --strip-extras --no-emit-index-url --output-file=requirements.txt pyproject.toml'
+```
 
 ### Streamlit Viewers
 
@@ -207,3 +281,7 @@ For full details (requirements, architecture, processing guarantees), see [MDM_S
 | CRM_A | Legacy system | 1 (highest) | 600-400K |
 | CRM_B | Acquired company | 2 | 400-350K |
 | CRM_C | Call center | 3 (lowest) | 500-250K |
+
+## License
+
+[Apache License 2.0](LICENSE). Security issues: see [SECURITY.md](SECURITY.md).

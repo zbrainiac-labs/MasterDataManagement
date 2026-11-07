@@ -57,116 +57,47 @@ From a technical perspective, the CRM MDM showcase is implemented entirely with 
 
 ### Dataflow
 
-At a high level, the dataflow is:
+At a high level, the dataflow is RAW tables → union view → enrichment → match + group → survivorship → current and SCD2 history Dynamic Tables → Customer 360 serving views. Steps from enrichment onward run as two parallel pipelines: **AI** (Cortex enrichment) and **FUZZY** (rule-based only), so both approaches can be compared on the same data.
 
-- RAW tables → UNION ALL → Cortex enrichment → Match \+ group → Survivorship → Dynamic Tables \+ SCD2 history Dynamic Tables.
+```mermaid
+flowchart TD
+    subgraph raw ["RAW · MDM_RAW_V001"]
+        A["CRMI_RAW_TB_CUSTOMER_A<br/>CRM A · legacy"]
+        B["CRMI_RAW_TB_CUSTOMER_B<br/>CRM B · acquired"]
+        C["CRMI_RAW_TB_CUSTOMER_C<br/>CRM C · call center"]
+    end
 
-\-- DATAFLOW:
+    U["CRMA_AGG_VW_CUSTOMER_UNION · view<br/>standardize columns, LOWER/TRIM email,<br/>normalize phone, file_date from _SOURCE_FILE"]
 
-\--   RAW Tables → Union ALL → Cortex Enrich → Match+Group → Survive → DT \+ SCD2 DT
+    subgraph agg ["AGG · MDM_AGG_V001"]
+        E["DT_CUSTOMER_ENRICHED<br/>AI: CORTEX.COMPLETE nickname → formal, AI_CLASSIFY fake names<br/>FUZZY: INITCAP only, no Cortex"]
+        G["DT_CUSTOMER_GROUPS<br/>match rules D01 email · D02 phone · P* fuzzy<br/>threshold 0.70 · DENSE_RANK → customer_id"]
+        S["DT_CUSTOMER_GOLDEN<br/>survivorship per customer_id + file_date<br/>DQ score 0–100 · all versions"]
+        CUR["DT_CUSTOMER<br/>current state · QUALIFY latest"]
+        H["DT_CUSTOMER_HISTORY<br/>SCD2 · SHA2 row hash + LAG()<br/>valid_from / valid_to"]
+    end
 
-\--
+    SRV["CRMS_AGG_VW_CUSTOMER_360 · views<br/>SRV · MDM_SRV_V001 · nested + flat, joined with addresses"]
 
-\--   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+    A & B & C --> U --> E --> G --> S
+    S --> CUR & H
+    CUR --> SRV
+```
 
-\--   │ **TB\_CUSTOMER\_A**    │  │ **TB\_CUSTOMER\_B**    │  │ **TB\_CUSTOMER\_C**    │  
+All Dynamic Tables use `TARGET_LAG = {{dt_lag}}` from the DCM templating config (1 hour by default, 24 hours in DEV). The table and view names above omit the `CRMA_AGG_` prefix and the `_AI` / `_FUZZY` suffix of the two parallel pipelines; addresses follow the same shape (`*_ADDRESSES_*`).
 
-\--   │ (CRM\_RAW\_001)    │  │ (CRM\_RAW\_001)    │  │ (CRM\_RAW\_001)    │
+Key components:
 
-\--   └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
-
-\--            │                     │                     │
-
-\--            └─────────┬───────────┼─────────────────────┘
-
-\--                      ▼
-
-\--            ┌──────────────────────────┐
-
-\--            │ **VW\_CUSTOMER\_UNION**        │  ← ALL records (no ROW\_NUMBER filter)
-
-\--            │ \- Standardize columns    │     \+ file\_date from \_SOURCE\_FILE
-
-\--            │ \- CRM\_A: first, last     │     email: LOWER(TRIM())
-
-\--            │ \- CRM\_B: SPLIT name      │     phone: REGEXP\_REPLACE
-
-\--            └────────────┬─────────────┘
-
-\--                         ▼
-
-\--            ┌──────────────────────────┐
-
-\--            │ **DT\_CUSTOMER\_ENRICHED**     │  ← Cortex AI Enrichment (DT, materialized)
-
-\--            │ \- canonical\_first\_name   │     CORTEX.COMPLETE nickname→formal
-
-\--            │ \- is\_fake\_name           │     AI\_CLASSIFY real vs fake
-
-\--            └────────────┬─────────────┘
-
-\--                         ▼
-
-\--            ┌──────────────────────────┐
-
-\--            │ **VW\_CUSTOMER\_GROUPS**       │  ← Entity Resolution \+ Clustering
-
-\--            │ Matching (CTE):          │     Uses canonical\_first\_name
-
-\--            │ \- Email, Phone, Name     │     MATCH-D01: Email (1.0)
-
-\--            │ \- SOUNDEX, Jaro-Winkler  │     MATCH-D02: Phone (0.95)
-
-\--            │ Grouping:                │     MATCH-P: Probabilistic (0.70)
-
-\--            │ \- Assign customer\_id     │     DENSE\_RANK() over cluster
-
-\--            └────────────┬─────────────┘
-
-\--                         ▼
-
-\--            ┌──────────────────────────┐
-
-\--            │ **DT\_CUSTOMER\_GOLDEN**       │  ← Survivorship per file\_date (DT)
-
-\--            │ Survivorship:            │     FIRST\_VALUE() partitioned by
-
-\--            │ \- first\_name: non-empty  │     (customer\_id, file\_date)
-
-\--            │ \- email: valid \+ CRM\_A   │     Returns ALL versions
-
-\--            │ \- phone: longest         │     DQ Score: weighted 0-100
-
-\--            └────────────┬─────────────┘
-
-\--                         ▼
-
-\--       ┌─────────────────┴─────────────────┐
-
-\--       ▼                                   ▼
-
-\-- ┌──────────────────┐            ┌──────────────────────────────┐
-
-\-- │ **DT\_CUSTOMER**      │            │ **DT\_CUSTOMER\_HISTORY** (DT)     │
-
-\-- │ (Current State)  │            │ SHA2 row-hash \+ LAG()        │
-
-\-- │ QUALIFY latest   │            │ Declarative SCD2             │
-
-\-- │ TARGET\_LAG=1hr   │            │ valid\_from, valid\_to         │
-
-\-- └──────────────────┘            └──────────────────────────────┘
-
-Key components include:
-
-- **RAW tables:** TB\_CUSTOMER\_A, TB\_CUSTOMER\_B, TB\_CUSTOMER\_C (per CRM system).  
-- **Unified view:** VW\_CUSTOMER\_UNION (standardized columns, harmonized formats, file\_date from \_SOURCE\_FILE).  
-- **Enrichment Dynamic Table:** CRMA\_AGG\_DT\_CUSTOMER\_ENRICHED (canonical first name via CORTEX.COMPLETE, fake‑name detection via AI\_CLASSIFY).  
-- **Matching & grouping view:** CRMA\_AGG\_VW\_CUSTOMER\_GROUPS (deterministic and probabilistic matching with Jaro‑Winkler, SOUNDEX, email/phone rules; cluster assignment into customer groups).  
-- **Survivorship \+ DQ Dynamic Table:** CRMA\_AGG\_DT\_CUSTOMER\_GOLDEN (attribute‑level survivorship logic and weighted DQ scoring rules).  
-- **Golden customer Dynamic Tables:**  
-  - CRMA\_AGG\_DT\_CUSTOMER – current golden customer records (latest only).  
-  - CRMA\_AGG\_DT\_CUSTOMER\_HISTORY – SCD Type 2 history using SHA2 row‑hash to detect changes and maintain VALID\_FROM / VALID\_TO ranges.
+| Layer | Object | Purpose |
+|---|---|---|
+| RAW | `CRMI_RAW_TB_CUSTOMER_A/B/C` | Append-only landing tables, one per CRM; loaded by a directory-table stream + serverless COPY task per stage |
+| Union | `CRMA_AGG_VW_CUSTOMER_UNION` | Standardized columns, harmonized email/phone formats, `file_date` from `_SOURCE_FILE` |
+| Enrichment | `CRMA_AGG_DT_CUSTOMER_ENRICHED_AI` / `_FUZZY` | Canonical first name (AI: `CORTEX.COMPLETE`; FUZZY: `INITCAP`), fake-name detection (AI only: `AI_CLASSIFY`) |
+| Matching | `CRMA_AGG_DT_CUSTOMER_GROUPS_AI` / `_FUZZY` | Deterministic + probabilistic rules (email, phone, Jaro-Winkler, SOUNDEX); cluster assignment via `DENSE_RANK()` |
+| Survivorship | `CRMA_AGG_DT_CUSTOMER_GOLDEN_AI` / `_FUZZY` | Attribute-level survivorship and weighted DQ scoring, one version per `file_date` |
+| Golden | `CRMA_AGG_DT_CUSTOMER_AI` / `_FUZZY` | Current golden customer records (latest only) |
+| History | `CRMA_AGG_DT_CUSTOMER_HISTORY_AI` / `_FUZZY` | SCD Type 2 via SHA2 row hash; `VALID_FROM` / `VALID_TO` |
+| Serving | `CRMS_AGG_VW_CUSTOMER_360_*` | Consumer-ready Customer 360 views (nested and flat) |
 
 The result is a repeatable, explainable MDM pipeline implemented with SQL, Dynamic Tables, and Cortex AI functions, without requiring a separate MDM application.
 

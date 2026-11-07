@@ -1,0 +1,224 @@
+name: CI / Deploy
+
+# One workflow for checks, image and deployment. Runs 1:1 on GitHub and
+# locally under act (bash local-ci/act.sh); github.event.act is only set by act.
+#   lint    actionlint + shellcheck
+#   sonar   offline tests + Trivy + SonarQube gate (local-ci/sonar-self-scan.sh)
+#   image   nrt/Dockerfile, native amd64 + arm64: build, Trivy image scan, smoke
+#           test; on main the tested image is pushed by digest with SBOM +
+#           provenance attestations
+#   deploy  DataOps pipeline: DCM deploy to MDM_DEV + GitHub release (main only;
+#           act: dry run with PAT auth)
+#   publish multi-arch manifest ghcr.io/zbrainiac-labs/mdm-nrt:{sha-<short>,latest}
+# Pull requests run lint, sonar and image only.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # never cancel a running deploy or image push on main
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: ghcr.io/zbrainiac-labs/mdm-nrt
+  TRIVY_VERSION: 0.76.2
+  # push / publish only for real runs on main (never for PRs or act)
+  RELEASE_RUN: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !github.event.act }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install actionlint + shellcheck
+        run: |
+          set -Eeuo pipefail
+          case "$(uname -m)" in x86_64) A=amd64; S=x86_64 ;; aarch64|arm64) A=arm64; S=aarch64 ;; esac
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sfL "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_${A}.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/bin" actionlint
+          curl -sfL "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.${S}.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP/bin" --strip-components=1 shellcheck-v0.11.0/shellcheck
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: actionlint
+        run: actionlint -color=false -shellcheck=
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck --severity=warning
+
+  sonar:
+    needs: lint
+    # DataOpsBackbone runners: on sonarnet with the sonar-init token at /sonar
+    runs-on: self-hosted
+    timeout-minutes: 20
+    env:
+      # Community Edition has no branch analysis: keep PR scans out of the main project
+      SONAR_PROJECT_KEY: ${{ github.event_name == 'pull_request' && 'MasterDataManagement-local-pr' || 'MasterDataManagement-local' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # SCM blame for new-code detection
+      - name: Tests + Trivy + SonarQube quality gate
+        run: bash local-ci/sonar-self-scan.sh
+      - name: Upload issue list
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: sonar-issues
+          path: .sonar-issues.tsv
+          if-no-files-found: ignore
+
+  # Each platform builds natively on its own runner (no QEMU on GitHub).
+  image:
+    name: nrt image (${{ matrix.platform.arch }})
+    needs: lint
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - {name: linux/amd64, arch: amd64, runner: ubuntu-latest}
+          - {name: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm}
+    env:
+      LOCAL_TAG: mdm-nrt:ci-${{ matrix.platform.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - name: Build (${{ matrix.platform.name }})
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: ./nrt
+          platforms: ${{ matrix.platform.name }}
+          load: true
+          tags: ${{ env.LOCAL_TAG }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+          # the GitHub Actions cache service only exists on GitHub
+          cache-from: ${{ !github.event.act && format('type=gha,scope=nrt-{0}', matrix.platform.arch) || '' }}
+          cache-to: ${{ !github.event.act && format('type=gha,scope=nrt-{0},mode=max', matrix.platform.arch) || '' }}
+      - name: Trivy image scan (HIGH/CRITICAL fails)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "aquasec/trivy:$TRIVY_VERSION" \
+            image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$LOCAL_TAG"
+      - name: Smoke test
+        run: |
+          set -Eeuo pipefail
+          test "$(docker image inspect -f '{{.Architecture}}' "$LOCAL_TAG")" = "${{ matrix.platform.arch }}"
+          test "$(docker run --rm "$LOCAL_TAG" id -u)" != "0"
+          docker run --rm "$LOCAL_TAG" python -c "import nrt_mdm.api, nrt_mdm.consumer, nrt_mdm.batch_resolve"
+          docker run --rm "$LOCAL_TAG" sh -c "command -v uvicorn && command -v streamlit"
+      # ---- main only: push exactly the image that was scanned and tested ----
+      - name: Log in to GHCR
+        if: env.RELEASE_RUN == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push by digest
+        id: push
+        if: env.RELEASE_RUN == 'true'
+        run: |
+          set -Eeuo pipefail
+          tag="$IMAGE_NAME:sha-${GITHUB_SHA::7}-${{ matrix.platform.arch }}"
+          docker tag "$LOCAL_TAG" "$tag"
+          docker push -q "$tag"
+          digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$tag")
+          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/digests" && touch "$RUNNER_TEMP/digests/${digest#*@sha256:}"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "aquasec/trivy:$TRIVY_VERSION" \
+            image --format cyclonedx --no-progress "$LOCAL_TAG" > "$RUNNER_TEMP/sbom.cdx.json"
+      - name: Attest provenance
+        if: env.RELEASE_RUN == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Attest SBOM
+        if: env.RELEASE_RUN == 'true'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/sbom.cdx.json
+          push-to-registry: true
+      - name: Upload digest
+        if: env.RELEASE_RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: digest-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: [sonar, image]
+    if: >-
+      !cancelled() && needs.sonar.result == 'success' && needs.image.result == 'success' &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.event.act == true)
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+      checks: write
+    uses: zbrainiac-labs/DataOpsBackbone/.github/workflows/dataops-pipeline.yml@main
+    with:
+      SOURCE_DATABASE: MDM_DEV
+      SOURCE_SCHEMA: MDM_RAW_v001
+      DCM_PROJECT_IDENTIFIER: MDM_DEV.MDM_DCM.MDM_PROJECT
+      DCM_TARGET: DEV
+      SNOWFLAKE_ACCOUNT: SFSEEUROPE-DEMO_MDAEPPEN
+      # act: no OIDC -> PAT (SNOW_CONFIG_B64); dry run unless local-ci/act.sh --full,
+      # and --full deploys to a per-build clone schema, never to MDM_DEV itself
+      USE_OIDC: ${{ github.event.act != true }}
+      DRY_RUN: ${{ github.event.act == true && github.event.full != true }}
+      CLONE_PER_BUILD: ${{ github.event.act == true && github.event.full == true }}
+    secrets: inherit
+
+  publish:
+    needs: [sonar, image]
+    if: >-
+      !cancelled() && needs.sonar.result == 'success' && needs.image.result == 'success' &&
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !github.event.act
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -Eeuo pipefail
+          refs=()
+          for d in *; do refs+=("$IMAGE_NAME@sha256:$d"); done
+          docker buildx imagetools create -t "$IMAGE_NAME:sha-${GITHUB_SHA::7}" -t "$IMAGE_NAME:latest" "${refs[@]}"
+          docker buildx imagetools inspect "$IMAGE_NAME:sha-${GITHUB_SHA::7}"

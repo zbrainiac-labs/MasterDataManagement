@@ -142,7 +142,8 @@ upload_to_stage() {
     return 0
   fi
   
-  local file_count=$(find "$source_dir" -name "*.csv" -type f 2>/dev/null | wc -l | tr -d ' ')
+  local file_count
+  file_count=$(find "$source_dir" -name "*.csv" -type f 2>/dev/null | wc -l | tr -d ' ')
   
   if [[ $file_count -eq 0 ]]; then
     echo "  [SKIP] No CSV files in: $source_dir"

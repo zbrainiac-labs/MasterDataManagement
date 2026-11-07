@@ -39,7 +39,7 @@ source "$VENV_DIR/bin/activate"
 
 if ! python -c "import nrt_mdm" 2>/dev/null; then
     echo "[venv] Installing nrt-mdm package..."
-    pip install -q -e "$PROJECT_DIR[dev]"
+    pip install -q -e "${PROJECT_DIR}[dev]"
 fi
 
 # --- Generate bulk test data if needed (small scale only) ---
