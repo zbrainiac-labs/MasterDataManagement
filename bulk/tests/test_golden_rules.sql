@@ -30,16 +30,19 @@ UNION ALL SELECT 'AI: DQ Excellent (>=90)', (SELECT COUNT(*) FROM CRMA_AGG_DT_CU
 -- =============================================================================
 
 SELECT
-    CASE WHEN dq_score >= 90 THEN 'Excellent (90-100)'
-         WHEN dq_score >= 70 THEN 'Good (70-89)'
-         WHEN dq_score >= 50 THEN 'Fair (50-69)'
-         ELSE 'Poor (0-49)' END AS dq_tier,
-    COUNT(*) AS record_count,
-    MIN(dq_score) AS min_score,
-    MAX(dq_score) AS max_score,
-    AVG(dq_score)::NUMBER(5,1) AS avg_score
+    CASE
+        WHEN DQ_SCORE >= 90 THEN 'Excellent (90-100)'
+        WHEN DQ_SCORE >= 70 THEN 'Good (70-89)'
+        WHEN DQ_SCORE >= 50 THEN 'Fair (50-69)'
+        ELSE 'Poor (0-49)'
+    END AS DQ_TIER,
+    COUNT(*) AS RECORD_COUNT,
+    MIN(DQ_SCORE) AS MIN_SCORE,
+    MAX(DQ_SCORE) AS MAX_SCORE,
+    AVG(DQ_SCORE)::NUMBER(5, 1) AS AVG_SCORE
 FROM CRMA_AGG_DT_CUSTOMER_AI
-GROUP BY 1 ORDER BY min_score DESC;
+GROUP BY DQ_TIER
+ORDER BY MIN_SCORE DESC;
 
 -- =============================================================================
 -- TEST 3A: AI DQ SCORE BOUNDS — No score outside 0-100
@@ -49,7 +52,7 @@ SELECT 'AI: DQ score out of bounds' AS check_name,
     COUNT(*) AS violations,
     CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END AS result
 FROM CRMA_AGG_DT_CUSTOMER_AI
-WHERE NOT (dq_score BETWEEN 0 AND 100);
+WHERE NOT (DQ_SCORE BETWEEN 0 AND 100);
 
 -- =============================================================================
 -- TEST 4A: AI DQ RULE SPOT CHECKS
@@ -77,10 +80,13 @@ WHERE (email IS NULL OR NOT RLIKE(email, '^[A-Za-z0-9._%+\\055]+@[A-Za-z0-9.\\05
 -- TEST 5A: AI SOURCE COUNT DISTRIBUTION
 -- =============================================================================
 
-SELECT source_count, COUNT(*) AS customers,
-    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS pct
+SELECT
+    SOURCE_COUNT,
+    COUNT(*) AS CUSTOMERS,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS PCT
 FROM CRMA_AGG_DT_CUSTOMER_AI
-GROUP BY source_count ORDER BY source_count ASC;
+GROUP BY SOURCE_COUNT
+ORDER BY SOURCE_COUNT ASC;
 
 -- =============================================================================
 -- TEST 6A: AI ADDRESS 1:1 CHECK
@@ -163,11 +169,15 @@ FROM CRMA_AGG_DT_CUSTOMER_AI;
 -- TEST 11A: AI SERVING LAYER
 -- =============================================================================
 
+WITH GOLDEN AS (SELECT COUNT(*) AS CNT FROM CRMA_AGG_DT_CUSTOMER_AI),
+
+SERVING AS (SELECT COUNT(*) AS CNT FROM MDM_SRV_V001.CRMS_AGG_VW_CUSTOMER_360_AI)
+
 SELECT
-    'AI: Serving view count matches golden' AS check_name,
-    CASE WHEN c.cnt = s.cnt THEN 'PASS' ELSE 'FAIL: DT=' || c.cnt || ' SRV=' || s.cnt END AS result
-FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER_AI) c
-CROSS JOIN (SELECT COUNT(*) AS cnt FROM MDM_SRV_v001.CRMS_AGG_VW_CUSTOMER_360_AI) s;
+    'AI: Serving view count matches golden' AS CHECK_NAME,
+    CASE WHEN GOLDEN.CNT = SERVING.CNT THEN 'PASS' ELSE 'FAIL: DT=' || GOLDEN.CNT || ' SRV=' || SERVING.CNT END AS CHECK_RESULT
+FROM GOLDEN
+CROSS JOIN SERVING;
 
 -- =============================================================================
 -- FUZZY PIPELINE TESTS
@@ -190,16 +200,19 @@ UNION ALL SELECT 'FUZZY: DQ Excellent (>=90)', (SELECT COUNT(*) FROM CRMA_AGG_DT
 -- =============================================================================
 
 SELECT
-    CASE WHEN dq_score >= 90 THEN 'Excellent (90-100)'
-         WHEN dq_score >= 70 THEN 'Good (70-89)'
-         WHEN dq_score >= 50 THEN 'Fair (50-69)'
-         ELSE 'Poor (0-49)' END AS dq_tier,
-    COUNT(*) AS record_count,
-    MIN(dq_score) AS min_score,
-    MAX(dq_score) AS max_score,
-    AVG(dq_score)::NUMBER(5,1) AS avg_score
+    CASE
+        WHEN DQ_SCORE >= 90 THEN 'Excellent (90-100)'
+        WHEN DQ_SCORE >= 70 THEN 'Good (70-89)'
+        WHEN DQ_SCORE >= 50 THEN 'Fair (50-69)'
+        ELSE 'Poor (0-49)'
+    END AS DQ_TIER,
+    COUNT(*) AS RECORD_COUNT,
+    MIN(DQ_SCORE) AS MIN_SCORE,
+    MAX(DQ_SCORE) AS MAX_SCORE,
+    AVG(DQ_SCORE)::NUMBER(5, 1) AS AVG_SCORE
 FROM CRMA_AGG_DT_CUSTOMER_FUZZY
-GROUP BY 1 ORDER BY min_score DESC;
+GROUP BY DQ_TIER
+ORDER BY MIN_SCORE DESC;
 
 -- =============================================================================
 -- TEST 3B: FUZZY DQ SCORE BOUNDS
@@ -209,16 +222,19 @@ SELECT 'FUZZY: DQ score out of bounds' AS check_name,
     COUNT(*) AS violations,
     CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END AS result
 FROM CRMA_AGG_DT_CUSTOMER_FUZZY
-WHERE NOT (dq_score BETWEEN 0 AND 100);
+WHERE NOT (DQ_SCORE BETWEEN 0 AND 100);
 
 -- =============================================================================
 -- TEST 5B: FUZZY SOURCE COUNT DISTRIBUTION
 -- =============================================================================
 
-SELECT source_count, COUNT(*) AS customers,
-    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS pct
+SELECT
+    SOURCE_COUNT,
+    COUNT(*) AS CUSTOMERS,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS PCT
 FROM CRMA_AGG_DT_CUSTOMER_FUZZY
-GROUP BY source_count ORDER BY source_count ASC;
+GROUP BY SOURCE_COUNT
+ORDER BY SOURCE_COUNT ASC;
 
 -- =============================================================================
 -- TEST 6B: FUZZY ADDRESS 1:1 CHECK
@@ -290,11 +306,15 @@ FROM CRMA_AGG_DT_CUSTOMER_FUZZY;
 -- TEST 11B: FUZZY SERVING LAYER
 -- =============================================================================
 
+WITH GOLDEN AS (SELECT COUNT(*) AS CNT FROM CRMA_AGG_DT_CUSTOMER_FUZZY),
+
+SERVING AS (SELECT COUNT(*) AS CNT FROM MDM_SRV_V001.CRMS_AGG_VW_CUSTOMER_360_FUZZY)
+
 SELECT
-    'FUZZY: Serving view count matches golden' AS check_name,
-    CASE WHEN c.cnt = s.cnt THEN 'PASS' ELSE 'FAIL: DT=' || c.cnt || ' SRV=' || s.cnt END AS result
-FROM (SELECT COUNT(*) AS cnt FROM CRMA_AGG_DT_CUSTOMER_FUZZY) c
-CROSS JOIN (SELECT COUNT(*) AS cnt FROM MDM_SRV_v001.CRMS_AGG_VW_CUSTOMER_360_FUZZY) s;
+    'FUZZY: Serving view count matches golden' AS CHECK_NAME,
+    CASE WHEN GOLDEN.CNT = SERVING.CNT THEN 'PASS' ELSE 'FAIL: DT=' || GOLDEN.CNT || ' SRV=' || SERVING.CNT END AS CHECK_RESULT
+FROM GOLDEN
+CROSS JOIN SERVING;
 
 -- =============================================================================
 -- COMPARISON: AI vs FUZZY pipeline outcomes

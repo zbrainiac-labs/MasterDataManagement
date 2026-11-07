@@ -129,10 +129,22 @@ bash local-ci/sonar-self-scan.sh      # offline tests + Trivy + SonarQube qualit
 SKIP_TRIVY=1 bash local-ci/sonar-self-scan.sh
 ```
 
-The fast inner loop: no commit, no workflow, no Snowflake. Fails on a failing test, a HIGH/CRITICAL
-Trivy finding, a failed quality gate, or any HIGH/BLOCKER/CRITICAL Sonar issue (Sonar project
-`MasterDataManagement-local`); the issue list is written to `.sonar-issues.tsv`.
+The fast inner loop: no commit, no workflow, no Snowflake. Runs the offline tests (coverage), SQLFluff
+(same rules as the DataOps pipeline, imported as external issues), Trivy and the Sonar rules. Fails on a
+failing test, a HIGH/CRITICAL Trivy finding, a failed quality gate (no new issues, new-code coverage ≥ 80 %),
+or any HIGH/BLOCKER/CRITICAL Sonar issue; the issue list is written to `.sonar-issues.tsv`.
 A green local run means a green `sonar` job. It does not build the image and does not deploy.
+
+SonarQube Community Build has no branch analysis, so each stream has its own project:
+
+| Sonar project | Written by |
+|---|---|
+| `MasterDataManagement` | `ci.yml` on GitHub, `main` only — the official record |
+| `MasterDataManagement-local-pr` | pull requests |
+| `MasterDataManagement-local` | `sonar-self-scan.sh` / `act.sh` on your machine (work in progress) |
+
+The DataOps pipeline's own Sonar upload is switched off (`SONAR_SCAN: false`); it would overwrite
+the analysis above with a second, differently configured one on the same key.
 
 ### 2. `local-ci/act.sh` — the full workflow locally
 
@@ -165,8 +177,8 @@ Logs are written to `local-ci/logs/` (git-ignored) and checked for leaked tokens
 
 | Event | Jobs |
 |---|---|
-| Pull request | lint · sonar (Sonar project `MasterDataManagement-local-pr`, keeps `main`'s new-code baseline clean) · nrt image amd64 + arm64 |
-| Push / merge to `main`, manual run on `main` | all of the above, then **deploy** (DataOps pipeline: prepare → scan → DCM deploy to `MDM_DEV` → validate → release `v<run>`) and **publish** (multi-arch image) — only if every check is green |
+| Pull request | lint · sonar (project `MasterDataManagement-local-pr`) · nrt image amd64 + arm64 |
+| Push / merge to `main`, manual run on `main` | all of the above (sonar into project `MasterDataManagement`), then **deploy** (DataOps pipeline: prepare → SQLFluff → DCM deploy to `MDM_DEV` → validate → release `v<run>`) and **publish** (multi-arch image) — only if every check is green |
 
 ```bash
 gh workflow run ci.yml                       # run CI / Deploy manually on main
@@ -176,8 +188,6 @@ docker pull ghcr.io/zbrainiac-labs/mdm-nrt:latest          # needs `gh auth toke
 gh attestation verify oci://ghcr.io/zbrainiac-labs/mdm-nrt:latest --owner zbrainiac-labs
 ```
 
-The DataOps pipeline scans the SQL again with SQLFluff into the Sonar project `MasterDataManagement`;
-that is the deploy gate of the shared pipeline, separate from the code gate above.
 Dependabot keeps actions, the base image and the pinned Python dependencies (`nrt/requirements.txt`) current;
 regenerate that file after changing `nrt/pyproject.toml`:
 

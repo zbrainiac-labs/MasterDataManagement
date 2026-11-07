@@ -1,6 +1,7 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# Scan this repo with the DataOpsBackbone SonarQube and fail on test failures,
+# Scan this repo with the DataOpsBackbone SonarQube (tests + coverage, SQLFluff
+# findings, Sonar rules) and fail on test failures,
 # scanner errors, a failed quality gate, or any HIGH/BLOCKER/CRITICAL issue
 # (impact severity or legacy severity). Used locally and in CI.
 # Uses the shared token from the sonar-init volume; config: sonar-project.properties
@@ -10,8 +11,8 @@
 #        it runs inline -- no docker-in-docker bind mounts.
 #
 # Usage: bash local-ci/sonar-self-scan.sh
-# Env:   SONAR_HOST (default http://sonarqube:9000), SONAR_PROJECT_KEY
-#        (default MasterDataManagement-local), RUNNER_IMAGE (default brainiac/local-github-runner)
+# Env:   SONAR_HOST (default http://sonarqube:9000), #   SONAR_PROJECT_KEY (default MasterDataManagement-local; ci.yml sets it per stream),
+#        RUNNER_IMAGE (default brainiac/local-github-runner)
 #        TRIVY_VERSION (default 0.76.2), SKIP_TRIVY=1 to skip the Trivy step
 # Out:   .sonar-issues.tsv (severity, rule, file, line, message) in the repo root
 # -----------------------------------------------------------------------------
@@ -36,9 +37,14 @@ SCAN='
     "$WORK/venv/bin/python" -m pytest -q -p no:cacheprovider \
       --cov=nrt_mdm --cov=shared/scripts --cov-report=xml:"$WORK/coverage.xml" \
       --ignore=nrt/tests/regression nrt/tests/test_*.py shared/tests | tail -n 3
+  # SQLFluff findings (same converter and config as the DataOps pipeline) as external issues
+  bash /usr/local/bin/sqlfluff-to-sonar.sh "$SRC" "$WORK/sqlfluff_issues.json" 0 >/dev/null
+  echo "SQLFluff findings: $(jq ".issues | length" "$WORK/sqlfluff_issues.json")"
   RC=0
   sonar-scanner -Dsonar.host.url="$H" -Dsonar.token="$SONAR_TOKEN" -Dsonar.projectKey="$KEY" \
+    -Dsonar.projectName="$NAME" \
     -Dsonar.python.coverage.reportPaths="$WORK/coverage.xml" \
+    -Dsonar.externalIssuesReportPaths="$WORK/sqlfluff_issues.json" \
     -Dsonar.working.directory="$WORK/.scannerwork" -Dsonar.qualitygate.wait=true \
     >"$WORK/scanner.log" 2>&1 || RC=$?
   grep -E "ERROR|ANALYSIS SUCCESSFUL|QUALITY GATE|EXECUTION" "$WORK/scanner.log" || true
@@ -55,7 +61,15 @@ SCAN='
 '
 
 export H="${SONAR_HOST:-http://sonarqube:9000}"
+# One key per stream (Community Build has no branches): MasterDataManagement = main on
+# GitHub, MasterDataManagement-local-pr = pull requests, MasterDataManagement-local = local
 export KEY="${SONAR_PROJECT_KEY:-MasterDataManagement-local}"
+case "$KEY" in
+  MasterDataManagement) NAME="MasterDataManagement (main)" ;;
+  *-local-pr) NAME="MasterDataManagement (pull requests)" ;;
+  *) NAME="MasterDataManagement (local)" ;;
+esac
+export NAME
 
 # Trivy (Aqua Security): dependency CVEs, Dockerfile/compose misconfig, secrets.
 # Fails on HIGH/CRITICAL, like the Sonar gate. SKIP_TRIVY=1 to skip.
@@ -95,5 +109,5 @@ trivy_scan docker
 
 docker run --rm --network "$NETWORK" \
   -v "$VOLUME:/sonar:ro" -v "$REPO:/src" -w /src \
-  -e H -e KEY -e SRC=/src \
+  -e H -e KEY -e NAME -e SRC=/src \
   --user root --entrypoint bash "${RUNNER_IMAGE:-brainiac/local-github-runner}" -c "$SCAN"
