@@ -3,7 +3,7 @@ name: CI / Deploy
 # One workflow for checks, image and deployment. Runs 1:1 on GitHub and
 # locally under act (bash local-ci/act.sh); github.event.act is only set by act.
 #   lint    actionlint + shellcheck
-#   sonar   offline tests + Trivy + SonarQube gate (local-ci/sonar-self-scan.sh)
+#   sonar   offline tests + SQLFluff + Trivy + SonarQube gate (local-ci/sonar-self-scan.sh)
 #   image   nrt/Dockerfile, native amd64 + arm64: build, Trivy image scan, smoke
 #           test; on main the tested image is pushed by digest with SBOM +
 #           provenance attestations
@@ -59,8 +59,12 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 20
     env:
-      # Community Edition has no branch analysis: keep PR scans out of the main project
-      SONAR_PROJECT_KEY: ${{ github.event_name == 'pull_request' && 'MasterDataManagement-local-pr' || 'MasterDataManagement-local' }}
+      # Community Edition has no branch analysis, so one project key per stream:
+      # main on GitHub = the official record, PRs and local / act runs stay out of it
+      SONAR_PROJECT_KEY: >-
+        ${{ github.event_name == 'pull_request' && 'MasterDataManagement-local-pr'
+        || (github.ref == 'refs/heads/main' && !github.event.act) && 'MasterDataManagement'
+        || 'MasterDataManagement-local' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -185,6 +189,9 @@ jobs:
       DCM_PROJECT_IDENTIFIER: MDM_DEV.MDM_DCM.MDM_PROJECT
       DCM_TARGET: DEV
       SNOWFLAKE_ACCOUNT: SFSEEUROPE-DEMO_MDAEPPEN
+      # the sonar job above is this repo's Sonar analysis (incl. SQLFluff findings);
+      # a second analysis on the same key would overwrite it (no branches in Community Build)
+      SONAR_SCAN: false
       # act: no OIDC -> PAT (SNOW_CONFIG_B64); dry run unless local-ci/act.sh --full,
       # and --full deploys to a per-build clone schema, never to MDM_DEV itself
       USE_OIDC: ${{ github.event.act != true }}
