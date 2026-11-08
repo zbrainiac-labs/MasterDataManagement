@@ -11,7 +11,8 @@
 #        it runs inline -- no docker-in-docker bind mounts.
 #
 # Usage: bash local-ci/sonar-self-scan.sh
-# Env:   SONAR_HOST (default http://sonarqube:9000), #   SONAR_PROJECT_KEY (default MasterDataManagement-local; ci.yml sets it per stream),
+# Env:   SONAR_HOST (default http://sonarqube:9000),
+#        SONAR_PROJECT_KEY (default MasterDataManagement-local; ci.yml sets it per stream),
 #        RUNNER_IMAGE (default brainiac/local-github-runner)
 #        TRIVY_VERSION (default 0.76.2), SKIP_TRIVY=1 to skip the Trivy step
 # Out:   .sonar-issues.tsv (severity, rule, file, line, message) in the repo root
