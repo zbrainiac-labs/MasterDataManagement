@@ -55,6 +55,8 @@ jobs:
 
   sonar:
     needs: lint
+    # self-hosted runners: never run code from a fork pull request
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     # DataOpsBackbone runners: on sonarnet with the sonar-init token at /sonar
     runs-on: self-hosted
     timeout-minutes: 20
@@ -90,6 +92,8 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+      # storage record linking the attested image to its registry (org "Linked Artifacts")
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -147,16 +151,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/digests" && touch "$RUNNER_TEMP/digests/${digest#*@sha256:}"
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "aquasec/trivy:$TRIVY_VERSION" \
             image --format cyclonedx --no-progress "$LOCAL_TAG" > "$RUNNER_TEMP/sbom.cdx.json"
+      # actions/attest replaces the deprecated attest-build-provenance / attest-sbom
       - name: Attest provenance
         if: env.RELEASE_RUN == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
       - name: Attest SBOM
         if: env.RELEASE_RUN == 'true'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
