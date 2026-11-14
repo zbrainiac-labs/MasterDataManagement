@@ -6,7 +6,7 @@
 #
 altair==6.3.0
     # via streamlit
-annotated-doc==0.0.5
+annotated-doc==0.0.6
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
@@ -32,9 +32,9 @@ click==8.5.1
     #   uvicorn
 confluent-kafka==2.16.1
     # via nrt-mdm (pyproject.toml)
-faker==40.44.0
+faker==40.54.0
     # via nrt-mdm (pyproject.toml)
-fastapi==0.162.0
+fastapi==0.162.4
     # via nrt-mdm (pyproject.toml)
 h11==0.16.0
     # via
