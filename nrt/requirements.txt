@@ -6,7 +6,7 @@
 #
 altair==6.3.0
     # via streamlit
-annotated-doc==0.0.5
+annotated-doc==0.0.6
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
@@ -30,11 +30,11 @@ click==8.5.1
     # via
     #   streamlit
     #   uvicorn
-confluent-kafka==2.16.1
+confluent-kafka==2.16.2
     # via nrt-mdm (pyproject.toml)
-faker==40.44.0
+faker==40.54.0
     # via nrt-mdm (pyproject.toml)
-fastapi==0.162.0
+fastapi==0.163.2
     # via nrt-mdm (pyproject.toml)
 h11==0.16.0
     # via
@@ -63,7 +63,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 markupsafe==3.0.4
     # via jinja2
-narwhals==2.28.0
+narwhals==2.29.0
     # via altair
 numpy==2.5.4
     # via
@@ -84,9 +84,9 @@ pillow==13.0.0
     # via streamlit
 protobuf==7.36.2
     # via streamlit
-psycopg==3.3.8
+psycopg==3.3.9
     # via nrt-mdm (pyproject.toml)
-psycopg-binary==3.3.8
+psycopg-binary==3.3.9
     # via psycopg
 psycopg-pool==3.3.3
     # via nrt-mdm (pyproject.toml)
@@ -100,7 +100,7 @@ pydeck==0.9.3
     # via streamlit
 python-dateutil==4.0.0
     # via pandas
-python-multipart==0.0.33
+python-multipart==0.0.34
     # via streamlit
 pyyaml==6.0.3
     # via nrt-mdm (pyproject.toml)
